@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.vite/
+
+*.log
+*.local
+
+.edge-ui-*/
+.DS_Store
+Thumbs.db

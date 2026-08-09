@@ -13,6 +13,7 @@ from .models import (
     ThreadStatus,
     WorldSetting,
 )
+from .utils import count_words
 
 
 DEMO_CHAPTERS = [
@@ -84,10 +85,6 @@ DEMO_SETTINGS = [
     {"name": "无灯马车", "category": "世界规则", "description": "雨夜不挂灯的马车只为履行未完成的旧约而来。"},
     {"name": "照影楼", "category": "势力分布", "description": "经营消息与秘密的地下组织，真伪难辨。"},
 ]
-
-
-def count_words(content: str) -> int:
-    return len("".join(content.split()))
 
 
 def seed_demo_workspace(database: Session) -> None:

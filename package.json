@@ -7,13 +7,14 @@
   "main": "electron/main.cjs",
   "scripts": {
     "backend": "python backend/main.py 8765",
-    "dev:ui": "vite --host 127.0.0.1 --port 5175",
+    "dev:ui": "vite --host 127.0.0.1",
     "dev": "concurrently -k -n backend,ui \"npm:backend\" \"npm:dev:ui\"",
     "desktop": "node electron/dev.cjs",
     "build": "tsc && vite build",
+    "backend:dist": "pyinstaller backend/mojing-backend.spec --noconfirm --distpath backend/dist --workpath backend/build",
     "preview": "vite preview --host 127.0.0.1",
-    "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder --win --x64"
+    "pack": "npm run build && npm run backend:dist && electron-builder --dir",
+    "dist": "npm run build && npm run backend:dist && electron-builder --win --x64"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
@@ -33,9 +34,12 @@
   "build": {
     "appId": "com.mojing.writer",
     "productName": "墨境",
-    "asar": false,
+    "asar": true,
     "directories": { "output": "release" },
-    "files": ["electron/**/*", "backend/**/*", "!backend/data/**/*", "!backend/**/__pycache__/**/*", "dist/**/*", "package.json"],
+    "files": ["electron/**/*", "dist/**/*", "package.json"],
+    "extraResources": [
+      { "from": "backend/dist", "to": "backend", "filter": ["mojing-backend.exe", "mojing-backend"] }
+    ],
     "extraMetadata": { "main": "electron/main.cjs" },
     "win": { "target": ["nsis", "portable"] },
     "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }

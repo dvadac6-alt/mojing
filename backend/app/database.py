@@ -5,18 +5,107 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]          # new/backend
 NEW_ROOT = BACKEND_DIR.parent                               # new/
 DEFAULT_DATA_DIR = NEW_ROOT / "墨境数据"                    # dedicated data folder inside new/
-CONFIG_PATH = BACKEND_DIR / "storage.json"                 # fixed location, never moves with data
 LEGACY_DB = BACKEND_DIR / "data" / "mojing.db"             # pre-feature storage location
 DB_FILENAME = "mojing.db"
 
-_lock = threading.Lock()
+
+def _resolve_config_path() -> Path:
+    """Where storage.json (the auth token + data-dir override) lives.
+
+    Dev: beside the backend source so it's stable and inspectable.
+    Packaged: the frozen exe's __file__ points at a throwaway _MEIPASS temp dir,
+    so we anchor to a persistent, writable location — the parent of the data dir
+    the Electron shell points us at (MOJING_DATA_DIR), or %APPDATA% as a final
+    fallback — otherwise the token & encryption secret would regenerate every
+    launch and every prior install's keys would become unreadable."""
+    env_data_dir = os.getenv("MOJING_DATA_DIR")
+    env_config = os.getenv("MOJING_CONFIG_PATH")
+    if env_config:
+        return Path(env_config)
+    if env_data_dir:
+        # userData/data -> userData/storage.json (parent keeps it out of the
+        # user-pickable data folder so moving that folder doesn't strand auth).
+        return Path(env_data_dir).parent / "storage.json"
+    return BACKEND_DIR / "storage.json"
+
+
+CONFIG_PATH = _resolve_config_path()
+
+
+class _ReadersWriterLock:
+    """A simple RW lock. DB request handlers acquire the read lock (many can
+    hold it concurrently); ``set_data_dir`` acquires the write lock and blocks
+    until every in-flight request has released its session, so no request can
+    write to a disposed/old engine after a data-directory switch."""
+
+    def __init__(self) -> None:
+        self._readers = 0
+        self._cond = threading.Condition()
+
+    @property
+    def active_readers(self) -> int:
+        return self._readers
+
+    def acquire_read(self) -> None:
+        with self._cond:
+            while self._readers < 0:  # a writer holds the lock
+                self._cond.wait()
+            self._readers += 1
+
+    def release_read(self) -> None:
+        with self._cond:
+            self._readers -= 1
+            if self._readers == 0:
+                self._cond.notify_all()
+
+    def acquire_write(self) -> None:
+        with self._cond:
+            while self._readers != 0:
+                self._cond.wait()
+            self._readers = -1  # mark writer-held
+
+    def release_write(self) -> None:
+        with self._cond:
+            self._readers = 0
+            self._cond.notify_all()
+
+    def read(self):
+        lock = self
+
+        class _ReadCtx:
+            def __enter__(self_inner):
+                lock.acquire_read()
+                return None
+
+            def __exit__(self_inner, *_exc):
+                lock.release_read()
+                return False
+
+        return _ReadCtx()
+
+    def write(self):
+        lock = self
+
+        class _WriteCtx:
+            def __enter__(self_inner):
+                lock.acquire_write()
+                return None
+
+            def __exit__(self_inner, *_exc):
+                lock.release_write()
+                return False
+
+        return _WriteCtx()
+
+
+_db_lock = _ReadersWriterLock()
 
 
 class Base(DeclarativeBase):
@@ -65,12 +154,27 @@ engine = create_engine(
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
+@event.listens_for(engine, "connect")
+def _enable_foreign_keys(dbapi_connection, _connection_record):
+    """SQLite ships with foreign keys OFF; the ORM cascade masks most cases but
+    bypassing it (raw SQL / migrations) would leave orphans. Enforce at the DB
+    layer on every fresh connection."""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
 def get_db():
-    database = SessionLocal()
-    try:
-        yield database
-    finally:
-        database.close()
+    # Hold the read lock for the whole request so a concurrent set_data_dir
+    # (write lock) blocks until this session is closed and the connection
+    # returned to the pool — disposing the engine can no longer race an
+    # in-flight write.
+    with _db_lock.read():
+        database = SessionLocal()
+        try:
+            yield database
+        finally:
+            database.close()
 
 
 def _copy_db(source: Path, target: Path) -> None:
@@ -137,9 +241,11 @@ def storage_info() -> dict:
 
 def set_data_dir(new_dir: str | Path) -> dict:
     """Switch the active data directory live: bring the current DB along, persist
-    the choice, and re-bind the engine so it takes effect immediately."""
+    the choice, and re-bind the engine so it takes effect immediately. The write
+    lock blocks until all in-flight requests finish, closing the window where an
+    old session could still commit to the previous database after dispose()."""
     global DATA_DIR, DATABASE_PATH, engine
-    with _lock:
+    with _db_lock.write():
         target_dir = Path(str(new_dir)).expanduser()
         target_dir.mkdir(parents=True, exist_ok=True)
         target_db = target_dir / DB_FILENAME
@@ -151,6 +257,8 @@ def set_data_dir(new_dir: str | Path) -> dict:
             f"sqlite:///{target_db.as_posix()}",
             connect_args={"check_same_thread": False},
         )
+        # re-bind the FK pragma to the replacement engine
+        event.listen(engine, "connect", _enable_foreign_keys)
         SessionLocal.configure(bind=engine)
         DATA_DIR = target_dir
         DATABASE_PATH = target_db

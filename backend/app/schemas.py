@@ -58,6 +58,20 @@ class ChapterResponse(OrmModel):
     updated_at: datetime
 
 
+class ChapterSummary(OrmModel):
+    """Lightweight chapter row for lists: omits the (potentially large) body so
+    the workspace payload stays small. Full content is fetched on demand via
+    GET /chapters/{id} when a chapter is opened for editing."""
+    id: str
+    novel_id: str
+    title: str
+    order: int
+    word_count: int
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class ChapterCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     content: str = ""
@@ -253,6 +267,9 @@ class AIConfigUpdate(BaseModel):
     name: str | None = None
     model: str | None = None
     base_url: str | None = None
+    # None => "leave the stored key untouched"; an explicit string (incl. "")
+    # overwrites it. This is how the frontend edits a config without ever
+    # having to know the real key.
     api_key: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
@@ -265,7 +282,10 @@ class AIConfigResponse(OrmModel):
     name: str
     model: str
     base_url: str
-    api_key: str
+    # The key itself is never returned — only whether one is set and a masked
+    # hint, so the UI can render "••••••••5678" without ever holding the secret.
+    has_key: bool = False
+    key_hint: str = ""
     temperature: float
     max_tokens: int
     is_active: bool
@@ -294,6 +314,14 @@ class AIConsistencyRequest(BaseModel):
     chapter_id: str | None = None
 
 
+class AIConfigTestRequest(BaseModel):
+    """Probe a config's connectivity. api_key is optional: omit it to test the
+    already-stored (encrypted) key; pass a new value to test before saving."""
+    model: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+
+
 # ---------- Workspace / misc ----------
 class WorkspaceResponse(BaseModel):
     novel: NovelResponse
@@ -302,7 +330,7 @@ class WorkspaceResponse(BaseModel):
 
 class NovelDetailResponse(OrmModel):
     novel: NovelResponse
-    chapters: list[ChapterResponse]
+    chapters: list[ChapterSummary]
     characters: list[CharacterResponse]
     locations: list[LocationResponse]
     world_settings: list[WorldSettingResponse]

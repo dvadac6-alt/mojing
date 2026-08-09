@@ -5,6 +5,8 @@ export default defineConfig({
   base: './',
   plugins: [react()],
   server: {
-    port: 5174,
+    // Keep in sync with the port the backend's CORS allow-list trusts and that
+    // electron/dev.cjs waits on (dev:ui also pins 5175). Single source of truth.
+    port: 5175,
   },
 })

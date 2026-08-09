@@ -1,4 +1,6 @@
 import json
+import os
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
@@ -6,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db, reset_data_dir, set_data_dir, storage_info
+from .security import get_auth_token
 from .models import (
     AIConfig,
     Chapter,
@@ -24,6 +27,7 @@ from .schemas import (
     AIConsistencyRequest,
     AIConfigCreate,
     AIConfigResponse,
+    AIConfigTestRequest,
     AIConfigUpdate,
     AIGenerateRequest,
     CharacterCreate,
@@ -32,6 +36,7 @@ from .schemas import (
     ChapterCreate,
     ChapterResponse,
     ChapterReorder,
+    ChapterSummary,
     ChapterUpdate,
     ChapterVersionResponse,
     ExportRequest,
@@ -50,16 +55,30 @@ from .schemas import (
     WorldSettingResponse,
     WorldSettingUpdate,
 )
-from .seed import count_words
+from .utils import count_words
 from .services.ai import dispatcher, prompt_builder
 
 router = APIRouter(prefix="/api")
+
+# Captured once at import so the desktop shell can tell a real Mojing backend
+# apart from whatever else might happen to be listening on the same port.
+_INSTANCE_PID = os.getpid()
+_INSTANCE_STARTED_AT = time.time()
 
 
 # ---------------------------------------------------------------- helpers
 def _chapter(c: Chapter) -> ChapterResponse:
     return ChapterResponse(
         id=c.id, novel_id=c.novel_id, title=c.title, content=c.content, order=c.order,
+        word_count=c.word_count, status=c.status.value, created_at=c.created_at, updated_at=c.updated_at,
+    )
+
+
+def _chapter_summary(c: Chapter) -> ChapterSummary:
+    """Same row as _chapter but without the body — the workspace/list payload
+    only needs metadata; full content is fetched separately when editing."""
+    return ChapterSummary(
+        id=c.id, novel_id=c.novel_id, title=c.title, order=c.order,
         word_count=c.word_count, status=c.status.value, created_at=c.created_at, updated_at=c.updated_at,
     )
 
@@ -112,9 +131,14 @@ def _thread(t: PlotThread) -> PlotThreadResponse:
 
 
 def _ai_config(cfg: AIConfig) -> AIConfigResponse:
+    from .security import decrypt_key, mask_key
+    # API keys are stored encrypted; decrypt here only to derive a mask hint.
+    # The cleartext key is never placed in the response.
+    plain = decrypt_key(cfg.api_key) if cfg.api_key else ""
     return AIConfigResponse(
         id=cfg.id, provider=cfg.provider, name=cfg.name, model=cfg.model, base_url=cfg.base_url,
-        api_key=cfg.api_key, temperature=cfg.temperature, max_tokens=cfg.max_tokens,
+        has_key=bool(plain), key_hint=mask_key(plain),
+        temperature=cfg.temperature, max_tokens=cfg.max_tokens,
         is_active=cfg.is_active, created_at=cfg.created_at,
     )
 
@@ -131,10 +155,71 @@ def _active_config(database: Session) -> AIConfig | None:
     return cfg or database.scalar(select(AIConfig).order_by(AIConfig.id.desc()).limit(1))
 
 
+# Auto-saves fire ~1/sec from the writing page. Without throttling a chapter
+# accumulates hundreds of full-text snapshots. So: collapse saves that land
+# within this window into the latest auto version (overwrite), and cap the
+# number of auto versions per chapter (labeled ones are never auto-pruned).
+AUTO_VERSION_THROTTLE_SECONDS = 600  # 10 minutes
+MAX_AUTO_VERSIONS_PER_CHAPTER = 50
+
+
+def _record_auto_version(database: Session, chapter: Chapter) -> None:
+    """Snapshot the *current* (pre-edit) content. If the most recent auto
+    version is newer than the throttle window we overwrite it; otherwise we add
+    a new row. Then prune the oldest auto versions beyond the cap."""
+    from datetime import datetime, timedelta
+    latest = database.scalar(
+        select(ChapterVersion).where(
+            ChapterVersion.chapter_id == chapter.id, ChapterVersion.label == "auto"
+        ).order_by(ChapterVersion.version_number.desc()).limit(1)
+    )
+    now = datetime.utcnow()
+    if latest and latest.created_at and latest.created_at >= now - timedelta(seconds=AUTO_VERSION_THROTTLE_SECONDS):
+        # Same burst of editing — replace the snapshot instead of stacking rows.
+        latest.content = chapter.content
+        latest.word_count = chapter.word_count
+        latest.created_at = now
+        return
+    current_version = database.scalar(
+        select(func.coalesce(func.max(ChapterVersion.version_number), 0)).where(
+            ChapterVersion.chapter_id == chapter.id)
+    ) or 0
+    database.add(
+        ChapterVersion(
+            chapter_id=chapter.id, content=chapter.content, word_count=chapter.word_count,
+            version_number=current_version + 1, label="auto", created_at=now,
+        )
+    )
+    _prune_auto_versions(database, chapter.id)
+
+
+def _prune_auto_versions(database: Session, chapter_id: str) -> None:
+    """Keep at most MAX_AUTO_VERSIONS_PER_CHAPTER auto-snapshots, deleting the
+    oldest. Versions with a non-auto label (rollback, manual, …) are immortal."""
+    autos = database.scalars(
+        select(ChapterVersion).where(
+            ChapterVersion.chapter_id == chapter_id, ChapterVersion.label == "auto"
+        ).order_by(ChapterVersion.version_number.desc())
+    ).all()
+    for stale in autos[MAX_AUTO_VERSIONS_PER_CHAPTER:]:
+        database.delete(stale)
+
+
 # ---------------------------------------------------------------- health / workspace
 @router.get("/health")
 def health():
-    return {"status": "ok", "storage": "sqlite", "version": "0.3.0"}
+    """Open endpoint (no token) used by the desktop shell to (a) wait for the
+    backend to come up, (b) confirm the port owner is actually Mojing via the
+    pid/started_at fingerprint, and (c) fetch the bearer token to inject."""
+    return {
+        "status": "ok",
+        "storage": "sqlite",
+        "version": "0.3.0",
+        "app": "mojing",
+        "pid": _INSTANCE_PID,
+        "started_at": _INSTANCE_STARTED_AT,
+        "auth_token": get_auth_token(),
+    }
 
 
 # ---------------------------------------------------------------- storage / data location
@@ -194,7 +279,7 @@ def _detail(database: Session, novel_id: str) -> NovelDetailResponse:
     novel = _get_novel(database, novel_id)
     return NovelDetailResponse(
         novel=_novel(novel, database),
-        chapters=[_chapter(c) for c in database.scalars(
+        chapters=[_chapter_summary(c) for c in database.scalars(
             select(Chapter).where(Chapter.novel_id == novel_id).order_by(Chapter.order))],
         characters=[_character(c) for c in database.scalars(
             select(Character).where(Character.novel_id == novel_id).order_by(Character.created_at))],
@@ -272,16 +357,8 @@ def update_chapter(chapter_id: str, payload: ChapterUpdate, database: Session = 
     content_changed = next_content != chapter.content
 
     if content_changed:
-        current_version = database.scalar(
-            select(func.coalesce(func.max(ChapterVersion.version_number), 0)).where(
-                ChapterVersion.chapter_id == chapter.id)
-        ) or 0
-        database.add(
-            ChapterVersion(
-                chapter_id=chapter.id, content=chapter.content, word_count=chapter.word_count,
-                version_number=current_version + 1, label="auto",
-            )
-        )
+        # Snapshot the outgoing content (throttled/capped) before overwriting.
+        _record_auto_version(database, chapter)
         chapter.content = next_content
         chapter.word_count = count_words(next_content)
 
@@ -582,9 +659,12 @@ def list_ai_configs(database: Session = Depends(get_db)):
 
 @router.post("/ai/configs", response_model=AIConfigResponse, status_code=201)
 def create_ai_config(payload: AIConfigCreate, database: Session = Depends(get_db)):
-    cfg = AIConfig(**payload.model_dump())
+    from .security import encrypt_key
+    data = payload.model_dump()
+    data["api_key"] = encrypt_key(data.get("api_key", ""))  # store encrypted, never plaintext
+    cfg = AIConfig(**data)
     if cfg.is_active:
-        database.execute(update_all_inactive())
+        _deactivate_other_configs(database)
     database.add(cfg)
     database.commit()
     database.refresh(cfg)
@@ -593,13 +673,18 @@ def create_ai_config(payload: AIConfigCreate, database: Session = Depends(get_db
 
 @router.put("/ai/configs/{config_id}", response_model=AIConfigResponse)
 def update_ai_config(config_id: int, payload: AIConfigUpdate, database: Session = Depends(get_db)):
+    from .security import encrypt_key
     cfg = database.get(AIConfig, config_id)
     if not cfg:
         raise HTTPException(status_code=404, detail="AI config not found")
     changes = payload.model_dump(exclude_none=True)
     if changes.get("is_active"):
-        for other in database.scalars(select(AIConfig).where(AIConfig.id != config_id, AIConfig.is_active.is_(True))):
-            other.is_active = False
+        _deactivate_other_configs(database, except_id=config_id)
+    # api_key=None is excluded by exclude_none, so an omitted key is preserved.
+    # An explicit value (incl. "") re-encrypts/overwrites. This is the only way
+    # the frontend ever touches the key — it never reads it back.
+    if "api_key" in changes:
+        changes["api_key"] = encrypt_key(changes["api_key"])
     for field, value in changes.items():
         setattr(cfg, field, value)
     database.commit()
@@ -627,14 +712,51 @@ def list_ai_models(database: Session = Depends(get_db)):
     }
 
 
-def update_all_inactive():
+def _deactivate_other_configs(database: Session, *, except_id: int | None = None) -> None:
+    """Single source of truth for the "only one active config" invariant.
+    Setting one config active deactivates every other row via a bulk UPDATE;
+    `except_id` excludes the row being activated (during update)."""
     from sqlalchemy import update as sa_update
-    return sa_update(AIConfig).values(is_active=False)
+    stmt = sa_update(AIConfig).values(is_active=False)
+    if except_id is not None:
+        stmt = stmt.where(AIConfig.id != except_id)
+    database.execute(stmt)
 
 
-async def _ai_generate_stream(req: AIGenerateRequest):
+@router.post("/ai/configs/{config_id}/test")
+def test_ai_config(config_id: int, payload: AIConfigTestRequest, database: Session = Depends(get_db)):
+    """Connectivity check run server-side so the API key never reaches the
+    browser. Sends a tiny models-list request to the provider."""
+    import httpx
+    from .security import decrypt_key
+    cfg = database.get(AIConfig, config_id)
+    if not cfg:
+        raise HTTPException(status_code=404, detail="AI config not found")
+    model = payload.model or cfg.model
+    base_url = (payload.base_url or cfg.base_url).rstrip("/")
+    api_key = payload.api_key if payload.api_key is not None else decrypt_key(cfg.api_key)
+    if not base_url or not api_key or not model:
+        return {"ok": False, "detail": "缺少 base_url / api_key / model，无法测试。"}
+    try:
+        resp = httpx.get(
+            f"{base_url}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=httpx.Timeout(15.0, connect=8.0),
+        )
+    except httpx.HTTPError as exc:
+        return {"ok": False, "detail": f"连接失败：{exc}"}
+    if resp.status_code >= 400:
+        return {"ok": False, "detail": f"模型服务返回 {resp.status_code}：{resp.text[:200]}"}
+    return {"ok": True, "detail": "连接成功", "model": model}
+
+
+def _prepare_generation(req: AIGenerateRequest) -> tuple[list[dict[str, str]], AIConfig | None, str]:
+    """Validate the request and build the prompt *before* the streaming response
+    is created. Doing this here (rather than inside the async generator) means a
+    missing novel/chapter raises an HTTPException that surfaces as a proper 4xx,
+    instead of a 200 whose body is a broken event stream."""
     with SessionLocal() as database:
-        novel = _get_novel(database, req.novel_id)
+        novel = _get_novel(database, req.novel_id)  # raises 404 before headers are sent
         current_content = ""
         if req.chapter_id:
             chapter = database.get(Chapter, req.chapter_id)
@@ -645,50 +767,67 @@ async def _ai_generate_stream(req: AIGenerateRequest):
             target_words=req.target_words, context=req.context, current_content=current_content,
         )
         config = _active_config(database)
-        model_name = config.model if config and config.api_key and config.base_url else "mock (offline)"
+        from .security import decrypt_key
+        has_key = bool(decrypt_key(config.api_key)) if config else False
+        model_name = config.model if config and has_key and config.base_url else "mock (offline)"
+        return messages, config, model_name
+
+
+async def _ai_generate_stream(req: AIGenerateRequest):
+    # Validation already happened in the route handler; stream the pieces out.
+    messages, config, model_name = _prepare_generation(req)
     async for piece in dispatcher.stream(config, messages):
         yield f"data: {json.dumps({'text': piece, 'model': model_name}, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
 
 
-@router.post("/ai/generate")
-def ai_generate(req: AIGenerateRequest):
+def _stream_response(req: AIGenerateRequest) -> StreamingResponse:
+    _prepare_generation(req)  # raises 404/422 synchronously, before the 200/stream starts
     return StreamingResponse(_ai_generate_stream(req), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/ai/generate")
+def ai_generate(req: AIGenerateRequest):
+    return _stream_response(req)
 
 
 @router.post("/ai/polish")
 def ai_polish(req: AIGenerateRequest):
     req.mode = "polish"
-    return StreamingResponse(_ai_generate_stream(req), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return _stream_response(req)
 
 
 @router.post("/ai/expand")
 def ai_expand(req: AIGenerateRequest):
     req.mode = "expand"
-    return StreamingResponse(_ai_generate_stream(req), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return _stream_response(req)
 
 
 @router.post("/ai/suggest-threads")
 def ai_suggest_threads(req: AIConsistencyRequest, database: Session = Depends(get_db)):
+    _get_novel(database, req.novel_id)
     threads = database.scalars(
         select(PlotThread).where(PlotThread.novel_id == req.novel_id, PlotThread.status != ThreadStatus.RESOLVED)
         .order_by(PlotThread.created_at)
     ).all()
-    chapters = database.scalars(
-        select(Chapter).where(Chapter.novel_id == req.novel_id).order_by(Chapter.order.desc()).limit(30)
-    ).all()
-    chapter_count = len(chapters)
+    latest_order = database.scalar(
+        select(func.coalesce(func.max(Chapter.order), 0)).where(Chapter.novel_id == req.novel_id)
+    ) or 0
+    # Map each planted chapter id → its order so we can measure how many chapters
+    # have passed since the thread was planted (the real "stale" signal).
+    planted_ids = {t.planted_chapter_id for t in threads if t.planted_chapter_id}
+    planted_order: dict[str, int] = {}
+    if planted_ids:
+        for c in database.scalars(select(Chapter).where(Chapter.id.in_(planted_ids))).all():
+            planted_order[c.id] = c.order
     suggestions = []
     for t in threads:
-        # crude "stale" heuristic: main threads unresolved for many chapters
-        age = max(0, chapter_count - (int(t.planted_chapter_id and 1) or 0))
+        age = latest_order - planted_order.get(t.planted_chapter_id, latest_order)
         if t.priority == ThreadPriority.MAJOR and age >= 5:
             suggestions.append({
                 "thread_id": t.id, "title": t.title, "priority": t.priority.value,
-                "advice": f"主线伏笔「{t.title}」已埋设较久，建议在最近 2-3 章内安排一次明显的推进或暗示。",
+                "advice": f"主线伏笔「{t.title}」已埋设较久（{age} 章），建议在最近 2-3 章内安排一次明显的推进或暗示。",
             })
     if not suggestions and threads:
         suggestions.append({
@@ -715,6 +854,96 @@ def ai_check_consistency(req: AIConsistencyRequest, database: Session = Depends(
     if not findings:
         findings.append({"level": "ok", "message": "暂未发现明显的前后矛盾。"})
     return {"findings": findings, "unresolved": len(unresolved), "chapters": len(chapters)}
+
+
+# ---------------------------------------------------------------- activity (writing heatmap)
+@router.get("/novels/{novel_id}/activity")
+def novel_activity(novel_id: str, days: int = Query(119, ge=14, le=366), database: Session = Depends(get_db)):
+    """Daily writing activity for the heatmap / week bars.
+
+    Reconstructs per-day net-added words from chapter_versions: each version
+    snapshots a chapter's word_count at a point in time, so the positive delta
+    between consecutive versions of the same chapter is the words written in
+    that interval. Summing those deltas per calendar day gives a real activity
+    signal without needing a separate event log."""
+    from datetime import datetime, timedelta, timezone
+
+    _get_novel(database, novel_id)
+    chapters = database.scalars(
+        select(Chapter).where(Chapter.novel_id == novel_id)
+    ).all()
+    chapter_ids = [c.id for c in chapters]
+
+    # Buckets keyed by YYYY-MM-DD (local-ish; server tz). Default 0.
+    today = datetime.now(timezone.utc).astimezone().date()
+    start = today - timedelta(days=days - 1)
+    buckets: dict[str, int] = {}
+    cursor = start
+    while cursor <= today:
+        buckets[cursor.isoformat()] = 0
+        cursor += timedelta(days=1)
+
+    if chapter_ids:
+        rows = database.scalars(
+            select(ChapterVersion).where(ChapterVersion.chapter_id.in_(chapter_ids))
+            .order_by(ChapterVersion.chapter_id, ChapterVersion.version_number)
+        ).all()
+        # Group by chapter to compute consecutive deltas.
+        prev_wc: dict[str, int] = {}
+        prev_date: dict[str, object] = {}
+        for v in rows:
+            prev = prev_wc.get(v.chapter_id)
+            if prev is not None:
+                delta = v.word_count - prev
+                if delta > 0 and v.created_at:
+                    day = _as_local_date(v.created_at).isoformat()
+                    if day in buckets:
+                        buckets[day] += delta
+                    # also credit the day the previous snapshot landed on, so a
+                    # burst that straddles midnight still reads as activity.
+                prev_wc[v.chapter_id] = v.word_count
+                prev_date[v.chapter_id] = v.created_at
+            else:
+                # First recorded version: count its whole word_count as the day's
+                # writing (the chapter had to be created with that much content).
+                if v.created_at:
+                    day = _as_local_date(v.created_at).isoformat()
+                    if day in buckets and v.word_count > 0:
+                        buckets[day] += v.word_count
+                prev_wc[v.chapter_id] = v.word_count
+
+        # The live chapter word_count beyond the last snapshot is uncounted;
+        # fold the trailing growth into "today" so current progress is visible.
+        for c in chapters:
+            last = prev_wc.get(c.id)
+            if last is not None and c.word_count > last:
+                buckets[today.isoformat()] += c.word_count - last
+
+    series = [{"date": d, "words": buckets[d]} for d in sorted(buckets)]
+    total = sum(b["words"] for b in series)
+    active_days = sum(1 for b in series if b["words"] > 0)
+    longest = 0
+    run = 0
+    for b in series:
+        run = run + 1 if b["words"] > 0 else 0
+        longest = max(longest, run)
+    return {
+        "novel_id": novel_id,
+        "days": days,
+        "series": series,
+        "total_words_written": total,
+        "active_days": active_days,
+        "longest_streak": longest,
+    }
+
+
+def _as_local_date(value) -> "object":
+    from datetime import datetime, timezone
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.date()
+        return value.astimezone().date()
+    return datetime.now(timezone.utc).astimezone().date()
 
 
 # ---------------------------------------------------------------- search & export

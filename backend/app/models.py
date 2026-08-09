@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -198,7 +198,7 @@ class AIConfig(Base):
     model: Mapped[str] = mapped_column(String(120), default="mock", nullable=False)
     base_url: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     api_key: Mapped[str] = mapped_column(String(255), default="", nullable=False)
-    temperature: Mapped[float] = mapped_column(default=0.85, nullable=False)
+    temperature: Mapped[float] = mapped_column(Float, default=0.85, nullable=False)
     max_tokens: Mapped[int] = mapped_column(Integer, default=1200, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

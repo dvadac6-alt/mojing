@@ -3,6 +3,10 @@ dist/
 .vite/
 backend/data/
 backend/storage.json
+backend/.mojing_secret
+# PyInstaller build outputs (mojing-backend.exe etc.)
+backend/build/
+backend/dist/
 墨境数据/
 release/
 __pycache__/
@@ -14,3 +18,6 @@ __pycache__/
 .edge-ui-*/
 .DS_Store
 Thumbs.db
+# Local editor / agent tooling state — not part of the project
+.claude/
+.workbuddy/

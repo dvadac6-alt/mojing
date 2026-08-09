@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
-  Bot, BrainCircuit, Check, ChevronRight, Database, Feather, GripVertical,
+  Bot, BrainCircuit, Check, ChevronLeft, ChevronRight, Database, Feather, GripVertical,
   History, PanelRightClose, Plus, Save, ShieldCheck, Sparkles, Square,
   Trash2, WandSparkles,
 } from 'lucide-react'
@@ -15,6 +15,80 @@ import { useAsyncAction } from '../hooks/useAsyncAction'
 
 const SIG_SEP = '\u0000'
 
+type DraftPage = { start: number; end: number; text: string }
+
+function measureTextHeight(source: HTMLTextAreaElement, text: string, width: number): number {
+  const probe = document.createElement('textarea')
+  const sourceStyle = window.getComputedStyle(source)
+  probe.value = text
+  probe.rows = 1
+  probe.style.position = 'fixed'
+  probe.style.left = '-10000px'
+  probe.style.top = '0'
+  probe.style.width = `${width}px`
+  probe.style.height = '0px'
+  probe.style.minHeight = '0'
+  probe.style.padding = sourceStyle.padding
+  probe.style.border = '0'
+  probe.style.boxSizing = 'border-box'
+  probe.style.font = sourceStyle.font
+  probe.style.lineHeight = sourceStyle.lineHeight
+  probe.style.letterSpacing = sourceStyle.letterSpacing
+  probe.style.textAlign = sourceStyle.textAlign
+  probe.style.whiteSpace = sourceStyle.whiteSpace
+  probe.style.wordBreak = sourceStyle.wordBreak
+  probe.style.overflow = 'hidden'
+  probe.style.visibility = 'hidden'
+  document.body.appendChild(probe)
+  const height = probe.scrollHeight
+  probe.remove()
+  return height
+}
+
+function paginateByHeight(content: string, source: HTMLTextAreaElement, firstHeight: number, pageHeight: number): DraftPage[] {
+  if (!content) return [{ start: 0, end: 0, text: '' }]
+
+  const pages: DraftPage[] = []
+  const width = source.clientWidth
+  let start = 0
+  let pageNumber = 0
+
+  while (start < content.length) {
+    const availableHeight = pageNumber === 0 ? firstHeight : pageHeight
+    let low = start + 1
+    let high = content.length
+    let end = low
+
+    // Find the furthest character that still fits the visible text area.
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2)
+      if (measureTextHeight(source, content.slice(start, middle), width) <= availableHeight + 1) {
+        end = middle
+        low = middle + 1
+      } else {
+        high = middle - 1
+      }
+    }
+
+    // Prefer ending at a nearby paragraph or line boundary without leaving
+    // a large unused area at the bottom of the page.
+    const fittedLength = end - start
+    const minNaturalBreak = start + Math.floor(fittedLength * 0.8)
+    const paragraphBreak = content.lastIndexOf('\n\n', end)
+    if (paragraphBreak >= minNaturalBreak && paragraphBreak + 2 <= end) end = paragraphBreak + 2
+    else {
+      const lineBreak = content.lastIndexOf('\n', end)
+      if (lineBreak >= minNaturalBreak && lineBreak + 1 <= end) end = lineBreak + 1
+    }
+
+    pages.push({ start, end, text: content.slice(start, end) })
+    start = end
+    pageNumber += 1
+  }
+
+  return pages
+}
+
 export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAssistant, onGoto }:
   { workspace: Workspace; patchWorkspace: (u: (w: Workspace) => Workspace) => void; reload: () => Promise<void>; assistant: boolean; onAssistant: () => void; onGoto: (p: Page) => void }) {
   const [tab, selectTab] = useState<'quick' | 'agent' | 'ref'>('quick')
@@ -25,8 +99,15 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
   const [savedAt, setSavedAt] = useState('')
   const [versionsOpen, setVersionsOpen] = useState(false)
   const [loadingContent, setLoadingContent] = useState(false)
+  const [pageIndex, setPageIndex] = useState(0)
+  const [pagination, setPagination] = useState<{ content: string; pages: DraftPage[] }>({
+    content: '',
+    pages: [{ start: 0, end: 0, text: '' }],
+  })
   const savedSignature = useRef('')
-  const paperWrapRef = useRef<HTMLDivElement>(null)
+  const paperRef = useRef<HTMLElement>(null)
+  const manuscriptRef = useRef<HTMLTextAreaElement>(null)
+  const headingMeasureRef = useRef<HTMLDivElement>(null)
 
   // The workspace only carries chapter summaries now; fetch the full body of
   // the active chapter on demand (the rest of the list stays light).
@@ -44,6 +125,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
   }, [workspace])
 
   const loadContent = useCallback(async (chapterId: string, fallbackTitle: string) => {
+    setPageIndex(0)
     setLoadingContent(true)
     try {
       const full = await workspaceApi.getChapter(chapterId)
@@ -62,8 +144,44 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
 
   const activeChapter = workspace.chapters.find(c => c.id === activeId)
   const currentSignature = `${draftTitle}${SIG_SEP}${draft}`
+  const pages = pagination.content === draft
+    ? pagination.pages
+    : [{ start: 0, end: draft.length, text: draft }]
+  const currentPageIndex = Math.min(pageIndex, pages.length - 1)
+  const currentPage = pages[currentPageIndex]
 
-  useEffect(() => { paperWrapRef.current?.scrollTo({ top: 0 }) }, [activeId])
+  useLayoutEffect(() => {
+    const paper = paperRef.current
+    const manuscript = manuscriptRef.current
+    const heading = headingMeasureRef.current
+    if (!paper || !manuscript || !heading || !manuscript.clientWidth) return
+
+    const paperStyle = window.getComputedStyle(paper)
+    const verticalBorder = parseFloat(paperStyle.borderTopWidth) + parseFloat(paperStyle.borderBottomWidth)
+    const verticalPadding = parseFloat(paperStyle.paddingTop) + parseFloat(paperStyle.paddingBottom)
+    const pageHeight = Math.max(1, paper.clientHeight - verticalBorder - verticalPadding)
+    const firstPageHeight = Math.max(1, pageHeight - heading.getBoundingClientRect().height)
+    const measuredPages = paginateByHeight(draft, manuscript, firstPageHeight, pageHeight)
+
+    setPagination({ content: draft, pages: measuredPages })
+    setPageIndex(index => Math.min(index, measuredPages.length - 1))
+    const refresh = () => {
+      const currentPaper = paperRef.current
+      const currentManuscript = manuscriptRef.current
+      const currentHeading = headingMeasureRef.current
+      if (!currentPaper || !currentManuscript || !currentHeading || !currentManuscript.clientWidth) return
+      const currentStyle = window.getComputedStyle(currentPaper)
+      const borders = parseFloat(currentStyle.borderTopWidth) + parseFloat(currentStyle.borderBottomWidth)
+      const padding = parseFloat(currentStyle.paddingTop) + parseFloat(currentStyle.paddingBottom)
+      const height = Math.max(1, currentPaper.clientHeight - borders - padding)
+      const firstHeight = Math.max(1, height - currentHeading.getBoundingClientRect().height)
+      const nextPages = paginateByHeight(draft, currentManuscript, firstHeight, height)
+      setPagination({ content: draft, pages: nextPages })
+      setPageIndex(index => Math.min(index, nextPages.length - 1))
+    }
+    window.addEventListener('resize', refresh)
+    return () => window.removeEventListener('resize', refresh)
+  }, [draft, activeId, assistant])
 
   const persistChapter = useCallback(async (chapterId = activeId, title = draftTitle, content = draft) => {
     if (!chapterId) return null
@@ -109,6 +227,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
     if (chapter.id === activeId) return
     if (activeId && currentSignature !== savedSignature.current) await persistChapter()
     setActiveId(chapter.id); setDraftTitle(chapter.title); setDraft('')
+    setPageIndex(0)
     savedSignature.current = `${chapter.title}${SIG_SEP}`
     setSaveState('saved')
     void loadContent(chapter.id, chapter.title)
@@ -118,7 +237,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
     try {
       const created = await workspaceApi.createChapter(workspace.novel.id, `未命名章节 ${workspace.chapters.length + 1}`)
       patchWorkspace(c => c ? { ...c, novel: { ...c.novel, chapter_count: c.novel.chapter_count + 1 }, chapters: [...c.chapters, created] } : c)
-      setActiveId(created.id); setDraftTitle(created.title); setDraft(created.content)
+      setActiveId(created.id); setDraftTitle(created.title); setDraft(created.content); setPageIndex(0)
       savedSignature.current = `${created.title}${SIG_SEP}${created.content}`
       setSaveState('saved')
     } catch { setSaveState('error') }
@@ -149,8 +268,17 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
       <button onClick={() => onGoto('threads')} title="伏笔看板"><BrainCircuit size={14} /></button>
       <button className={'assist-toggle ' + (assistant ? 'active' : '')} onClick={onAssistant}><WandSparkles size={14} />辅助中心</button>
     </div>
-      <div className="paper-wrap" ref={paperWrapRef}><article className="paper editable-paper"><label>第 {activeChapter.order} 章</label><input className="chapter-title-input" value={draftTitle} onChange={e => setDraftTitle(e.target.value)} aria-label="章节标题" /><div className="ornament"><i /><Feather size={14} /><i /></div><textarea className="manuscript-textarea" value={draft} onChange={e => setDraft(e.target.value)} aria-label="章节正文" placeholder={loadingContent ? '正在读取本章内容…' : '从这里开始写作……'} spellCheck={false} disabled={loadingContent} /></article></div>
-      <footer className="editor-status"><span>本章 {draft.replace(/\s/g, '').length.toLocaleString()} 字</span><span>全文 {fmt(workspace.novel.total_words)} 字</span><b /><span>段落 {paragraphs}</span><span>预计阅读 {readingMinutes} 分钟</span><span><button className="btn ghost" onClick={() => onGoto('threads')}>伏笔看板</button></span></footer>
+       <div className="paper-wrap"><article ref={paperRef} className="paper editable-paper">
+         {currentPageIndex === 0 && <div className="page-heading"><label>第 {activeChapter.order} 章</label><input className="chapter-title-input" value={draftTitle} onChange={e => setDraftTitle(e.target.value)} aria-label="章节标题" /><div className="ornament"><i /><Feather size={14} /><i /></div></div>}
+         <textarea ref={manuscriptRef} className="manuscript-textarea" value={currentPage.text} onChange={e => setDraft(current => current.slice(0, currentPage.start) + e.target.value + current.slice(currentPage.end))} aria-label={`章节正文第 ${currentPageIndex + 1} 页`} placeholder={loadingContent ? '正在读取本章内容…' : '从这里开始写作……'} spellCheck={false} disabled={loadingContent} />
+         <div ref={headingMeasureRef} className="page-heading page-heading-measure" aria-hidden="true"><label>第 {activeChapter.order} 章</label><input className="chapter-title-input" value={draftTitle} readOnly tabIndex={-1} /><div className="ornament"><i /><Feather size={14} /><i /></div></div>
+       </article></div>
+       <nav className="page-navigation" aria-label="章节分页">
+         <button onClick={() => setPageIndex(index => Math.max(0, index - 1))} disabled={currentPageIndex === 0}><ChevronLeft size={14} />上一页</button>
+         <span>第 <b>{currentPageIndex + 1}</b> / {pages.length} 页</span>
+         <button onClick={() => setPageIndex(index => Math.min(pages.length - 1, index + 1))} disabled={currentPageIndex >= pages.length - 1}>下一页<ChevronRight size={14} /></button>
+       </nav>
+       <footer className="editor-status"><span>本章 {draft.replace(/\s/g, '').length.toLocaleString()} 字</span><span>全文 {fmt(workspace.novel.total_words)} 字</span><b /><span>段落 {paragraphs}</span><span>预计阅读 {readingMinutes} 分钟</span><span><button className="btn ghost" onClick={() => onGoto('threads')}>伏笔看板</button></span></footer>
     </section>
     {assistant && <aside className="assistant"><div className="assistant-title"><span><Sparkles size={14} /></span><strong>辅助中心</strong><button onClick={onAssistant}><PanelRightClose size={15} /></button></div><div className="assistant-tabs"><button className={tab === 'quick' ? 'active' : ''} onClick={() => selectTab('quick')}>快捷生成</button><button className={tab === 'agent' ? 'active' : ''} onClick={() => selectTab('agent')}>Agent</button><button className={tab === 'ref' ? 'active' : ''} onClick={() => selectTab('ref')}>参考</button></div>{tab === 'quick' ? <QuickAI workspace={workspace} chapter={activeChapter} onAccept={text => setDraft(d => d.replace(/\s*$/, '') + '\n\n' + text)} /> : tab === 'agent' ? <AgentPanel workspace={workspace} onAccept={text => setDraft(d => d.replace(/\s*$/, '') + '\n\n' + text)} /> : <ReferencePanel />}</aside>}
     {versionsOpen && <VersionHistory chapter={activeChapter} onClose={() => setVersionsOpen(false)} onRolled={async () => { setVersionsOpen(false); await reload(); void loadContent(activeChapter.id, activeChapter.title) }} />}

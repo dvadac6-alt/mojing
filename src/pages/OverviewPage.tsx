@@ -117,7 +117,9 @@ function WeekRow({ words, peak }: { words: number[]; peak: number }) {
       const height = w > 0 ? Math.max(3, Math.round((w / peak) * WEEK_BAR_MAX)) : 0
       return <span key={i}>
         <em>{w > 0 ? fmt(w) : '—'}</em>
-        <i style={{ height }} className={w > 0 ? 'has-words' : ''} />
+        <span className="week-bar-area" aria-hidden="true">
+          <i style={{ height }} className={w > 0 ? 'has-words' : ''} />
+        </span>
         <small>{WEEKDAY_LABELS[i]}</small>
       </span>
     })}

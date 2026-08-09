@@ -25,6 +25,10 @@ export type Chapter = {
   updated_at: string
 }
 
+/** Chapter metadata without the (potentially large) body. The workspace payload
+ * returns summaries; full content is loaded on demand via getChapter(). */
+export type ChapterSummary = Omit<Chapter, 'content'>
+
 export type ChapterVersion = {
   id: string
   chapter_id: string
@@ -103,7 +107,10 @@ export type AIConfig = {
   name: string
   model: string
   base_url: string
-  api_key: string
+  // The API key itself is never returned. has_key tells the UI a key is on file;
+  // key_hint is a masked hint like "••••••••5678" for display.
+  has_key: boolean
+  key_hint: string
   temperature: number
   max_tokens: number
   is_active: boolean
@@ -112,7 +119,7 @@ export type AIConfig = {
 
 export type Workspace = {
   novel: Novel
-  chapters: Chapter[]
+  chapters: ChapterSummary[]
   characters: Character[]
   locations: Location[]
   world_settings: WorldSetting[]
@@ -151,6 +158,7 @@ declare global {
     mojingDesktop?: {
       platform: string
       getBackendUrl: () => string
+      getAuthToken: () => string
       chooseDataDir?: (defaultPath?: string) => Promise<string | null>
     }
   }
@@ -160,10 +168,18 @@ const API_BASE = window.mojingDesktop?.getBackendUrl() ??
   import.meta.env.VITE_API_URL ??
   'http://127.0.0.1:8765/api'
 
+// Bearer token injected by the desktop shell. Empty in browser-dev (the backend
+// relaxes the token check for trusted dev origins).
+const AUTH_TOKEN = window.mojingDesktop?.getAuthToken?.() ?? ''
+
+function authHeaders(): Record<string, string> {
+  return AUTH_TOKEN ? { Authorization: `Bearer ${AUTH_TOKEN}` } : {}
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...init?.headers },
   })
   if (!response.ok) {
     const detail = await response.json().catch(() => null)
@@ -174,14 +190,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 // ---------- SSE streaming for AI ----------
+// `signal` lets the caller abort a runaway generation (user clicks "stop").
 export async function* streamAI(
   path: string,
   body: AIGenerateRequest,
+  signal?: AbortSignal,
 ): AsyncGenerator<{ text: string; model: string }> {
   const response = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...authHeaders() },
     body: JSON.stringify(body),
+    signal,
   })
   if (!response.ok || !response.body) {
     const detail = await response.json().catch(() => null)
@@ -286,13 +305,22 @@ const api = {
     }),
   deleteThread: (id: string) => request<void>(`/plot-threads/${id}`, { method: 'DELETE' }),
 
-  // AI configs
+  // AI configs. The key is write-only: create/update send it, responses never
+  // contain it. updateAIConfig with api_key omitted keeps the stored key; sending
+  // '' clears it.
   listAIConfigs: () => request<AIConfig[]>('/ai/configs'),
-  createAIConfig: (data: Partial<AIConfig>) =>
+  createAIConfig: (data: Partial<AIConfig> & { api_key?: string }) =>
     request<AIConfig>('/ai/configs', { method: 'POST', body: JSON.stringify(data) }),
-  updateAIConfig: (id: number, data: Partial<AIConfig>) =>
+  updateAIConfig: (id: number, data: Partial<AIConfig> & { api_key?: string | null }) =>
     request<AIConfig>(`/ai/configs/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteAIConfig: (id: number) => request<void>(`/ai/configs/${id}`, { method: 'DELETE' }),
+  // Server-side connectivity check so the key stays off the client. Pass
+  // api_key/model/base_url to test a not-yet-saved config; omit to test stored.
+  testAIConfig: (id: number, data?: { model?: string; base_url?: string; api_key?: string }) =>
+    request<{ ok: boolean; detail: string; model?: string }>(`/ai/configs/${id}/test`, {
+      method: 'POST',
+      body: JSON.stringify(data ?? {}),
+    }),
   aiModels: () =>
     request<{ active: AIConfig | null; configs: AIConfig[]; provider: string; offline_fallback: boolean }>('/ai/models'),
   suggestThreads: (novelId: string) =>
@@ -311,10 +339,20 @@ const api = {
     request<{ chapters: { id: string; title: string; order: number; word_count: number }[]; characters: { id: string; name: string; role: string }[]; threads: { id: string; title: string; status: string }[]; total: number }>(
       `/novels/${novelId}/search?q=${encodeURIComponent(q)}`,
     ),
+  /** Daily writing activity for the heatmap / week bars on the overview page. */
+  activity: (novelId: string, days = 119) =>
+    request<{
+      novel_id: string
+      days: number
+      series: { date: string; words: number }[]
+      total_words_written: number
+      active_days: number
+      longest_streak: number
+    }>(`/novels/${novelId}/activity?days=${days}`),
   exportNovel: async (novelId: string, format: 'txt' | 'markdown', chapterIds?: string[]) => {
     const response = await fetch(`${API_BASE}/novels/${novelId}/export`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ format, chapter_ids: chapterIds ?? null }),
     })
     if (!response.ok) throw new Error('导出失败')

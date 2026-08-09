@@ -5,7 +5,7 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .database import SessionLocal, get_db
+from .database import SessionLocal, get_db, reset_data_dir, set_data_dir, storage_info
 from .models import (
     AIConfig,
     Chapter,
@@ -135,6 +135,28 @@ def _active_config(database: Session) -> AIConfig | None:
 @router.get("/health")
 def health():
     return {"status": "ok", "storage": "sqlite", "version": "0.3.0"}
+
+
+# ---------------------------------------------------------------- storage / data location
+@router.get("/storage")
+def get_storage():
+    return storage_info()
+
+
+@router.post("/storage/path")
+def set_storage_path(payload: dict):
+    data_dir = (payload or {}).get("data_dir")
+    if not data_dir or not str(data_dir).strip():
+        raise HTTPException(status_code=422, detail="data_dir is required")
+    try:
+        return set_data_dir(str(data_dir).strip())
+    except OSError as error:
+        raise HTTPException(status_code=400, detail=f"无法使用该路径：{error}") from error
+
+
+@router.post("/storage/reset")
+def reset_storage_path():
+    return reset_data_dir()
 
 
 @router.get("/workspace", response_model=NovelDetailResponse)

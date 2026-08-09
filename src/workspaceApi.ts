@@ -119,6 +119,16 @@ export type Workspace = {
   plot_threads: PlotThread[]
 }
 
+export type StorageInfo = {
+  data_dir: string
+  default_dir: string
+  db_path: string
+  db_file: string
+  db_size_kb: number
+  exists: boolean
+  is_default: boolean
+}
+
 export type AIContextOptions = {
   characters: boolean
   locations: boolean
@@ -141,6 +151,7 @@ declare global {
     mojingDesktop?: {
       platform: string
       getBackendUrl: () => string
+      chooseDataDir?: (defaultPath?: string) => Promise<string | null>
     }
   }
 }
@@ -201,6 +212,12 @@ export async function* streamAI(
 }
 
 const api = {
+  // storage / data location
+  getStorage: () => request<StorageInfo>('/storage'),
+  setStoragePath: (dataDir: string) =>
+    request<StorageInfo>('/storage/path', { method: 'POST', body: JSON.stringify({ data_dir: dataDir }) }),
+  resetStorage: () => request<StorageInfo>('/storage/reset', { method: 'POST' }),
+
   // workspace / novels
   load: () => request<Workspace>('/workspace'),
   getNovel: (id: string) => request<Workspace>(`/novels/${id}`),
@@ -306,3 +323,22 @@ const api = {
 }
 
 export { api as workspaceApi }
+
+/**
+ * Open a folder picker and return an absolute path, or null if cancelled.
+ * Uses the Electron native dialog when running in the desktop app; otherwise
+ * (browser dev) it falls back to a manual prompt, since browsers don't expose
+ * real filesystem paths. The picker defaults to `defaultPath`.
+ */
+export async function chooseDataDirectory(defaultPath: string): Promise<string | null> {
+  if (window.mojingDesktop?.chooseDataDir) {
+    try {
+      return await window.mojingDesktop.chooseDataDir(defaultPath)
+    } catch {
+      return null
+    }
+  }
+  const picked = window.prompt('请输入数据保存文件夹的绝对路径：', defaultPath)
+  return picked && picked.trim() ? picked.trim() : null
+}
+

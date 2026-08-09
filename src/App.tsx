@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ElementType, type ReactNode } from 'react'
 import {
-  workspaceApi, streamAI, type Chapter, type ChapterVersion, type Workspace, type Novel, type Character,
+  workspaceApi, streamAI, chooseDataDirectory, type Chapter, type ChapterVersion, type Workspace, type Novel, type Character,
   type Location as Loc, type WorldSetting, type PlotThread, type ThreadStatus, type ThreadPriority,
-  type AIConfig,
+  type AIConfig, type StorageInfo,
 } from './workspaceApi'
 import {
   AlertTriangle, Archive, BookHeart, BookMarked, BookOpen, Bot, BrainCircuit,
@@ -809,7 +809,7 @@ function SettingsPage({ workspace, reload }: { workspace: Workspace; reload: () 
       {active === '导出' && <ExportSection workspace={workspace} />}
       {active === '通用' && <PageHeader title="通用设置" desc="这些设置只保存在当前 Windows 用户配置中。" />}
       {active === '编辑器' && <PageHeader title="编辑器设置" desc="字号、主题与自动保存间隔。" />}
-      {active === '数据与备份' && <DataSection />}
+      {active === '数据与备份' && <DataSection reload={reload} />}
       {active === '关于' && <AboutSection />}
     </section>
   </div>
@@ -896,10 +896,76 @@ function ExportSection({ workspace }: { workspace: Workspace }) {
   </Scroll>
 }
 
-function DataSection() {
-  return <Scroll><PageHeader eyebrow="本地存储" title="数据与备份" desc="所有创作数据都保存在本地 SQLite，无需联网。" />
-    <div style={{ maxWidth: 720, margin: '0 auto' }}><div className="setting-block"><header><h2>本地数据库</h2><p>当前数据库运行状态。</p></header><section><div className="database-card"><span><Database size={20} /></span><div><strong>mojing.db</strong><p>SQLite · 本地优先</p><small><Check size={11} />数据库健康 · 数据保存在本机</small></div><Button>打开数据目录</Button></div></section></div></div>
+function DataSection({ reload }: { reload: () => Promise<void> }) {
+  const [info, setInfo] = useState<StorageInfo | null>(null)
+  const [error, setError] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const hasNativePicker = !!window.mojingDesktop?.chooseDataDir
+
+  const loadInfo = async () => { try { setInfo(await workspaceApi.getStorage()) } catch { /* ignore */ } }
+  useEffect(() => { void loadInfo() }, [])
+
+  const apply = async (dir: string) => {
+    setBusy(true); setError('')
+    try {
+      await workspaceApi.setStoragePath(dir)
+      await loadInfo()
+      await reload()
+      setEditing(false)
+    } catch (e) { setError(e instanceof Error ? e.message : '切换路径失败') } finally { setBusy(false) }
+  }
+  const reset = async () => {
+    setBusy(true); setError('')
+    try { await workspaceApi.resetStorage(); await loadInfo(); await reload() }
+    catch (e) { setError(e instanceof Error ? e.message : '恢复失败') } finally { setBusy(false) }
+  }
+
+  const sizeLabel = info ? (info.db_size_kb >= 1024 ? `${(info.db_size_kb / 1024).toFixed(1)} MB` : `${info.db_size_kb} KB`) : '—'
+  return <Scroll>
+    <PageHeader eyebrow="本地存储" title="数据与备份" desc="所有创作数据都保存在本地 SQLite，无需联网。可自定义保存位置。" />
+    <div style={{ maxWidth: 720, margin: '0 auto', display: 'grid', gap: 12 }}>
+      {error && <div style={{ color: '#a3483f', fontSize: 11 }}>{error}</div>}
+      <div className="setting-block">
+        <header><h2>数据保存位置</h2><p>默认保存在程序目录下的「墨境数据」文件夹，可改为任意位置（含数据会被一并迁移过去）。</p></header>
+        <section>
+          <div className="database-card">
+            <span><Database size={20} /></span>
+            <div>
+              <strong>{info?.db_file ?? 'mojing.db'} · {sizeLabel}</strong>
+              <p style={{ wordBreak: 'break-all' }}>{info?.data_dir ?? '读取中…'}</p>
+              <small><Check size={11} />{info?.is_default ? '当前为默认位置' : '自定义位置'}{info && !info.is_default && ' · 可恢复默认'}</small>
+            </div>
+            <Button onClick={() => setEditing(true)}><HardDrive size={13} />选择保存路径</Button>
+            {info && !info.is_default && <Button kind="ghost" onClick={reset} disabled={busy}>恢复默认</Button>}
+          </div>
+        </section>
+      </div>
+      <div className="setting-block">
+        <header><h2>默认路径</h2><p>未自定义时，数据保存在这里。</p></header>
+        <section><div className="config-card"><span className="cfg-icon"><HardDrive size={18} /></span><div className="cfg-body"><strong>墨境数据（默认）</strong><small style={{ wordBreak: 'break-all' }}>{info?.default_dir ?? '—'}</small></div></div></section>
+      </div>
+    </div>
+    {editing && info && <PathForm defaultPath={info.data_dir} hasNativePicker={hasNativePicker} onClose={() => setEditing(false)} onApply={apply} busy={busy} />}
   </Scroll>
+}
+
+function PathForm({ defaultPath, hasNativePicker, onClose, onApply, busy }: { defaultPath: string; hasNativePicker: boolean; onClose: () => void; onApply: (dir: string) => void; busy: boolean }) {
+  const [dir, setDir] = useState(defaultPath)
+  const browse = async () => {
+    const picked = await chooseDataDirectory(dir)
+    if (picked) setDir(picked)
+  }
+  return <Modal eyebrow="自定义保存路径" title="选择数据保存位置" icon={HardDrive} onClose={onClose}
+    footer={<div className="form-actions"><Button onClick={onClose}>取消</Button><Button kind="primary" onClick={() => onApply(dir.trim())} disabled={busy || !dir.trim()}>{busy ? '迁移中…' : '保存并迁移数据'}</Button></div>}>
+    <div className="form-body">
+      <Field label="数据文件夹路径"><textarea className={areaCls} value={dir} onChange={e => setDir(e.target.value)} rows={2} /></Field>
+      {hasNativePicker
+        ? <Button onClick={browse}><MapPin size={13} />浏览文件夹…</Button>
+        : <small className="safe-note"><ShieldCheck size={13} />浏览器开发模式下请直接粘贴路径；桌面版可点击浏览选择文件夹。</small>}
+      <small style={{ color: '#969994', lineHeight: 1.7 }}>切换后，当前数据库会被复制到新位置并立即生效。原位置的数据不会被删除（可作为备份）。</small>
+    </div>
+  </Modal>
 }
 function AboutSection() {
   return <Scroll><PageHeader eyebrow="关于" title="墨境 Mojing" desc="本地优先的 AI 小说创作工作台。" />

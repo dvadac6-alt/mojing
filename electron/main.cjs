@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const { spawn } = require('node:child_process')
 const http = require('node:http')
 const path = require('node:path')
@@ -6,6 +6,17 @@ const path = require('node:path')
 const BACKEND_PORT = 8765
 let mainWindow = null
 let backendProcess = null
+
+// Native folder picker for the data directory. Defaults to the current path.
+ipcMain.handle('dialog:chooseDataDir', async (_event, defaultPath) => {
+  const result = await dialog.showOpenDialog({
+    title: '选择墨境数据保存位置',
+    defaultPath: defaultPath || undefined,
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  if (result.canceled || !result.filePaths.length) return null
+  return result.filePaths[0]
+})
 
 function backendIsReady() {
   return new Promise(resolve => {
@@ -45,11 +56,18 @@ async function startBackend() {
     return
   }
   const backendDirectory = path.join(__dirname, '..', 'backend')
-  const dataDirectory = path.join(app.getPath('userData'), 'data')
+  // In development, the FastAPI backend stores data in <new>/墨境数据 by default
+  // (overridable via the Settings page). Only when packaged do we redirect it to
+  // a writable per-user folder, since the install dir may be read-only.
+  const spawnEnv = { ...process.env }
+  if (app.isPackaged) {
+    const dataDirectory = path.join(app.getPath('userData'), 'data')
+    spawnEnv.MOJING_DATA_DIR = dataDirectory
+  }
   backendProcess = spawn('python', ['main.py', String(BACKEND_PORT)], {
     cwd: backendDirectory,
     windowsHide: true,
-    env: { ...process.env, MOJING_DATA_DIR: dataDirectory },
+    env: spawnEnv,
   })
   backendProcess.stdout.on('data', value => console.log(`[Mojing API] ${value}`))
   backendProcess.stderr.on('data', value => console.error(`[Mojing API] ${value}`))

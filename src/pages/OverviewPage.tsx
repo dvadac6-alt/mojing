@@ -109,14 +109,13 @@ export function OverviewPage({ workspace, onWrite, onGoto }: { workspace: Worksp
 
 const WEEK_BAR_MAX = 32 // tallest bar (px) inside a week row
 
-/** One week row of the progress chart: value above the bar, weekday below. */
+/** One week row of the progress chart: bars above the weekday labels. */
 function WeekRow({ words, peak }: { words: number[]; peak: number }) {
   return <div className="week-row">
     {words.map((w, i) => {
       // Bar height tracks this day's words relative to the week's peak.
       const height = w > 0 ? Math.max(3, Math.round((w / peak) * WEEK_BAR_MAX)) : 0
       return <span key={i}>
-        <em>{w > 0 ? fmt(w) : '—'}</em>
         <span className="week-bar-area" aria-hidden="true">
           <i style={{ height }} className={w > 0 ? 'has-words' : ''} />
         </span>

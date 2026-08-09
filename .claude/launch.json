@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Frontend Dev Server",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "new"],
+      "port": 5175
+    },
+    {
+      "name": "ai-novel-writer (旧版)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "ai-novel-writer/frontend"],
+      "port": 5173
+    }
+  ]
+}

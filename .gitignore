@@ -1,6 +1,9 @@
 # 子项目（独立 git 仓库）
 new/
 
+# Claude 配置
+.claude/
+
 # 系统文件
 Thumbs.db
 Desktop.ini

@@ -1,3 +1,4 @@
+// ---------- types ----------
 export type Novel = {
   id: string
   title: string
@@ -5,9 +6,11 @@ export type Novel = {
   author: string
   genre: string
   target_words: number
-  status: string
+  status: 'planning' | 'writing' | 'completed'
   total_words: number
   chapter_count: number
+  created_at: string
+  updated_at: string
 }
 
 export type Chapter = {
@@ -22,9 +25,115 @@ export type Chapter = {
   updated_at: string
 }
 
+export type ChapterVersion = {
+  id: string
+  chapter_id: string
+  content: string
+  word_count: number
+  version_number: number
+  label: string
+  created_at: string
+}
+
+export type Character = {
+  id: string
+  novel_id: string
+  name: string
+  aliases: string
+  role: string
+  color: string
+  description: string
+  personality: string
+  background: string
+  appearance: string
+  abilities: string
+  relationships: Record<string, unknown>
+  first_appearance_chapter_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type Location = {
+  id: string
+  novel_id: string
+  name: string
+  description: string
+  type: string
+  parent_location_id: string | null
+  first_appearance_chapter_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type WorldSetting = {
+  id: string
+  novel_id: string
+  name: string
+  category: string
+  description: string
+  related_settings: Record<string, unknown>
+  chapter_references: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export type ThreadStatus = 'planted' | 'hinted' | 'developing' | 'resolved'
+export type ThreadPriority = 'major' | 'minor' | 'detail'
+
+export type PlotThread = {
+  id: string
+  novel_id: string
+  title: string
+  description: string
+  status: ThreadStatus
+  priority: ThreadPriority
+  planted_chapter_id: string | null
+  resolved_chapter_id: string | null
+  related_characters: string[]
+  related_locations: string[]
+  related_threads: string[]
+  notes: string
+  created_at: string
+  updated_at: string
+}
+
+export type AIConfig = {
+  id: number
+  provider: string
+  name: string
+  model: string
+  base_url: string
+  api_key: string
+  temperature: number
+  max_tokens: number
+  is_active: boolean
+  created_at: string
+}
+
 export type Workspace = {
   novel: Novel
   chapters: Chapter[]
+  characters: Character[]
+  locations: Location[]
+  world_settings: WorldSetting[]
+  plot_threads: PlotThread[]
+}
+
+export type AIContextOptions = {
+  characters: boolean
+  locations: boolean
+  settings: boolean
+  threads: boolean
+  recent_chapters: number
+}
+
+export type AIGenerateRequest = {
+  novel_id: string
+  chapter_id?: string | null
+  instruction?: string
+  mode?: 'continue' | 'polish' | 'expand'
+  target_words?: number
+  context?: Partial<AIContextOptions>
 }
 
 declare global {
@@ -49,19 +158,151 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const detail = await response.json().catch(() => null)
     throw new Error(detail?.detail ?? `请求失败（${response.status}）`)
   }
+  if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
 }
 
-export const workspaceApi = {
-  load: () => request<Workspace>('/workspace'),
-  createChapter: (novelId: string, title: string) => request<Chapter>(`/novels/${novelId}/chapters`, {
+// ---------- SSE streaming for AI ----------
+export async function* streamAI(
+  path: string,
+  body: AIGenerateRequest,
+): AsyncGenerator<{ text: string; model: string }> {
+  const response = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
-    body: JSON.stringify({ title, content: '' }),
-  }),
-  updateChapter: (chapterId: string, changes: Partial<Pick<Chapter, 'title' | 'content' | 'status'>>) =>
-    request<Chapter>(`/chapters/${chapterId}`, {
-      method: 'PUT',
-      body: JSON.stringify(changes),
-    }),
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok || !response.body) {
+    const detail = await response.json().catch(() => null)
+    throw new Error(detail?.detail ?? `AI 请求失败（${response.status}）`)
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      const trimmed = line.trimStart()
+      if (!trimmed.startsWith('data:')) continue
+      const data = trimmed.slice(5).trim()
+      if (data === '[DONE]') return
+      try {
+        const parsed = JSON.parse(data)
+        if (parsed.text) yield { text: parsed.text, model: parsed.model ?? '' }
+      } catch {
+        /* keep partial */
+      }
+    }
+  }
 }
 
+const api = {
+  // workspace / novels
+  load: () => request<Workspace>('/workspace'),
+  getNovel: (id: string) => request<Workspace>(`/novels/${id}`),
+  listNovels: () => request<Novel[]>('/novels'),
+  createNovel: (data: Partial<Novel>) =>
+    request<Novel>('/novels', { method: 'POST', body: JSON.stringify(data) }),
+  updateNovel: (id: string, data: Partial<Novel>) =>
+    request<Novel>(`/novels/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteNovel: (id: string) => request<void>(`/novels/${id}`, { method: 'DELETE' }),
+
+  // chapters
+  createChapter: (novelId: string, title: string, content = '') =>
+    request<Chapter>(`/novels/${novelId}/chapters`, { method: 'POST', body: JSON.stringify({ title, content }) }),
+  getChapter: (id: string) => request<Chapter>(`/chapters/${id}`),
+  updateChapter: (id: string, changes: Partial<Pick<Chapter, 'title' | 'content' | 'status'>>) =>
+    request<Chapter>(`/chapters/${id}`, { method: 'PUT', body: JSON.stringify(changes) }),
+  deleteChapter: (id: string) => request<void>(`/chapters/${id}`, { method: 'DELETE' }),
+  listVersions: (chapterId: string) =>
+    request<ChapterVersion[]>(`/chapters/${chapterId}/versions`),
+  rollback: (chapterId: string, versionId: string) =>
+    request<Chapter>(`/chapters/${chapterId}/rollback/${versionId}`, { method: 'POST' }),
+
+  // characters
+  listCharacters: (novelId: string) => request<Character[]>(`/novels/${novelId}/characters`),
+  createCharacter: (novelId: string, data: Partial<Character>) =>
+    request<Character>(`/novels/${novelId}/characters`, { method: 'POST', body: JSON.stringify(data) }),
+  updateCharacter: (id: string, data: Partial<Character>) =>
+    request<Character>(`/characters/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteCharacter: (id: string) => request<void>(`/characters/${id}`, { method: 'DELETE' }),
+
+  // locations
+  listLocations: (novelId: string) => request<Location[]>(`/novels/${novelId}/locations`),
+  createLocation: (novelId: string, data: Partial<Location>) =>
+    request<Location>(`/novels/${novelId}/locations`, { method: 'POST', body: JSON.stringify(data) }),
+  updateLocation: (id: string, data: Partial<Location>) =>
+    request<Location>(`/locations/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteLocation: (id: string) => request<void>(`/locations/${id}`, { method: 'DELETE' }),
+
+  // world settings
+  listSettings: (novelId: string) => request<WorldSetting[]>(`/novels/${novelId}/settings`),
+  createSetting: (novelId: string, data: Partial<WorldSetting>) =>
+    request<WorldSetting>(`/novels/${novelId}/settings`, { method: 'POST', body: JSON.stringify(data) }),
+  updateSetting: (id: string, data: Partial<WorldSetting>) =>
+    request<WorldSetting>(`/settings/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteSetting: (id: string) => request<void>(`/settings/${id}`, { method: 'DELETE' }),
+
+  // plot threads
+  listThreads: (novelId: string, status?: string) => {
+    const query = status ? `?status=${encodeURIComponent(status)}` : ''
+    return request<PlotThread[]>(`/novels/${novelId}/plot-threads${query}`)
+  },
+  listUnresolvedThreads: (novelId: string) =>
+    request<PlotThread[]>(`/novels/${novelId}/plot-threads/unresolved`),
+  threadWeb: (novelId: string) =>
+    request<{ nodes: { id: string; title: string; status: string; priority: string }[]; edges: { from: string; to: string }[] }>(
+      `/novels/${novelId}/plot-thread-web`,
+    ),
+  createThread: (novelId: string, data: Partial<PlotThread>) =>
+    request<PlotThread>(`/novels/${novelId}/plot-threads`, { method: 'POST', body: JSON.stringify(data) }),
+  updateThread: (id: string, data: Partial<PlotThread>) =>
+    request<PlotThread>(`/plot-threads/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  resolveThread: (id: string, resolvedChapterId?: string | null) =>
+    request<PlotThread>(`/plot-threads/${id}/resolve`, {
+      method: 'PUT',
+      body: JSON.stringify({ resolved_chapter_id: resolvedChapterId ?? null }),
+    }),
+  deleteThread: (id: string) => request<void>(`/plot-threads/${id}`, { method: 'DELETE' }),
+
+  // AI configs
+  listAIConfigs: () => request<AIConfig[]>('/ai/configs'),
+  createAIConfig: (data: Partial<AIConfig>) =>
+    request<AIConfig>('/ai/configs', { method: 'POST', body: JSON.stringify(data) }),
+  updateAIConfig: (id: number, data: Partial<AIConfig>) =>
+    request<AIConfig>(`/ai/configs/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteAIConfig: (id: number) => request<void>(`/ai/configs/${id}`, { method: 'DELETE' }),
+  aiModels: () =>
+    request<{ active: AIConfig | null; configs: AIConfig[]; provider: string; offline_fallback: boolean }>('/ai/models'),
+  suggestThreads: (novelId: string) =>
+    request<{ suggestions: { thread_id: string; title: string; priority: string; advice: string }[]; unresolved_count: number }>(
+      '/ai/suggest-threads',
+      { method: 'POST', body: JSON.stringify({ novel_id: novelId }) },
+    ),
+  checkConsistency: (novelId: string) =>
+    request<{ findings: { level: string; message: string }[]; unresolved: number; chapters: number }>(
+      '/ai/check-consistency',
+      { method: 'POST', body: JSON.stringify({ novel_id: novelId }) },
+    ),
+
+  // search + export
+  search: (novelId: string, q: string) =>
+    request<{ chapters: { id: string; title: string; order: number; word_count: number }[]; characters: { id: string; name: string; role: string }[]; threads: { id: string; title: string; status: string }[]; total: number }>(
+      `/novels/${novelId}/search?q=${encodeURIComponent(q)}`,
+    ),
+  exportNovel: async (novelId: string, format: 'txt' | 'markdown', chapterIds?: string[]) => {
+    const response = await fetch(`${API_BASE}/novels/${novelId}/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ format, chapter_ids: chapterIds ?? null }),
+    })
+    if (!response.ok) throw new Error('导出失败')
+    return response.blob()
+  },
+}
+
+export { api as workspaceApi }

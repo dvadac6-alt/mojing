@@ -34,4 +34,22 @@ def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _migrate_legacy_columns()
+
+
+def _migrate_legacy_columns() -> None:
+    """Lightweight in-place migrations for tables created before a schema change.
+    SQLite supports ALTER TABLE ADD COLUMN; this keeps the local DB working
+    without needing a full migration framework."""
+    additions = {
+        "chapter_versions": [("label", "VARCHAR(40) DEFAULT 'auto' NOT NULL")],
+    }
+    with engine.connect() as conn:
+        for table, columns in additions.items():
+            existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            for name, definition in columns:
+                if name not in existing:
+                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+        conn.commit()
+
 

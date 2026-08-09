@@ -88,7 +88,7 @@ export default function App() {
           {page === 'projects' && <ProjectsPage onOpen={openNovel} currentId={novel.id} />}
           {page === 'overview' && <OverviewPage workspace={workspace} onWrite={() => setPage('writing')} onGoto={goto} />}
           {page === 'writing' && <WritingPage workspace={workspace} patchWorkspace={patchWorkspace} reload={reload} assistant={assistant} onAssistant={() => setAssistant(!assistant)} onGoto={goto} />}
-          {page === 'outline' && <OutlinePage workspace={workspace} />}
+          {page === 'outline' && <OutlinePage workspace={workspace} reload={reload} />}
           {page === 'characters' && <CharactersPage workspace={workspace} reload={reload} />}
           {page === 'locations' && <LocationsPage workspace={workspace} reload={reload} />}
           {page === 'world' && <WorldPage workspace={workspace} reload={reload} />}

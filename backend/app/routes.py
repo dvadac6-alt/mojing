@@ -20,6 +20,8 @@ from .models import (
     Novel,
     NovelStatus,
     PlotThread,
+    Scene,
+    GraphEdge,
     ThreadPriority,
     ThreadStatus,
     WorldSetting,
@@ -52,6 +54,12 @@ from .schemas import (
     PlotThreadResolve,
     PlotThreadResponse,
     PlotThreadUpdate,
+    GraphEdgeCreate,
+    GraphEdgeOut,
+    GraphEdgeUpdate,
+    SceneCreate,
+    SceneSummary,
+    SceneUpdate,
     WorldSettingCreate,
     WorldSettingResponse,
     WorldSettingUpdate,
@@ -81,6 +89,20 @@ def _chapter_summary(c: Chapter) -> ChapterSummary:
     return ChapterSummary(
         id=c.id, novel_id=c.novel_id, title=c.title, order=c.order,
         word_count=c.word_count, status=c.status.value, created_at=c.created_at, updated_at=c.updated_at,
+    )
+
+
+def _scene(s: Scene) -> SceneSummary:
+    return SceneSummary(
+        id=s.id, chapter_id=s.chapter_id, title=s.title, order=s.order,
+        created_at=s.created_at, updated_at=s.updated_at,
+    )
+
+
+def _graph_edge(e: GraphEdge) -> GraphEdgeOut:
+    return GraphEdgeOut(
+        id=e.id, novel_id=e.novel_id, kind=e.kind, from_id=e.from_id,
+        to_id=e.to_id, label=e.label, created_at=e.created_at,
     )
 
 
@@ -282,6 +304,9 @@ def _detail(database: Session, novel_id: str) -> NovelDetailResponse:
         novel=_novel(novel, database),
         chapters=[_chapter_summary(c) for c in database.scalars(
             select(Chapter).where(Chapter.novel_id == novel_id).order_by(Chapter.order))],
+        scenes=[_scene(s) for s in database.scalars(
+            select(Scene).join(Chapter, Scene.chapter_id == Chapter.id)
+            .where(Chapter.novel_id == novel_id).order_by(Chapter.order, Scene.order))],
         characters=[_character(c) for c in database.scalars(
             select(Character).where(Character.novel_id == novel_id).order_by(Character.created_at))],
         locations=[_location(l) for l in database.scalars(
@@ -290,6 +315,8 @@ def _detail(database: Session, novel_id: str) -> NovelDetailResponse:
             select(WorldSetting).where(WorldSetting.novel_id == novel_id).order_by(WorldSetting.created_at))],
         plot_threads=[_thread(t) for t in database.scalars(
             select(PlotThread).where(PlotThread.novel_id == novel_id).order_by(PlotThread.created_at))],
+        graph_edges=[_graph_edge(e) for e in database.scalars(
+            select(GraphEdge).where(GraphEdge.novel_id == novel_id).order_by(GraphEdge.created_at))],
     )
 
 
@@ -433,6 +460,92 @@ def rollback_chapter(chapter_id: str, version_id: str, database: Session = Depen
     database.commit()
     database.refresh(chapter)
     return _chapter(chapter)
+
+
+# ---------------------------------------------------------------- scenes (outline mind map)
+@router.post("/novels/{novel_id}/chapters/{chapter_id}/scenes", response_model=SceneSummary, status_code=201)
+def create_scene(novel_id: str, chapter_id: str, payload: SceneCreate, database: Session = Depends(get_db)):
+    """Add a scene node under a chapter of the given novel."""
+    _get_novel(database, novel_id)
+    chapter = database.get(Chapter, chapter_id)
+    if not chapter or chapter.novel_id != novel_id:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    next_order = database.scalar(
+        select(func.coalesce(func.max(Scene.order), 0)).where(Scene.chapter_id == chapter_id)
+    ) + 1
+    scene = Scene(chapter_id=chapter_id, title=payload.title.strip(), order=next_order)
+    database.add(scene)
+    database.commit()
+    database.refresh(scene)
+    return _scene(scene)
+
+
+@router.put("/scenes/{scene_id}", response_model=SceneSummary)
+def update_scene(scene_id: str, payload: SceneUpdate, database: Session = Depends(get_db)):
+    scene = database.get(Scene, scene_id)
+    if not scene:
+        raise HTTPException(status_code=404, detail="Scene not found")
+    if payload.title is not None:
+        scene.title = payload.title.strip()
+    database.commit()
+    database.refresh(scene)
+    return _scene(scene)
+
+
+@router.delete("/scenes/{scene_id}", status_code=204)
+def delete_scene(scene_id: str, database: Session = Depends(get_db)):
+    scene = database.get(Scene, scene_id)
+    if not scene:
+        raise HTTPException(status_code=404, detail="Scene not found")
+    database.delete(scene)
+    database.commit()
+
+
+# ---------------------------------------------------------------- graph edges (manual mind-map connectors)
+@router.post("/novels/{novel_id}/graph-edges", response_model=GraphEdgeOut, status_code=201)
+def create_graph_edge(novel_id: str, payload: GraphEdgeCreate, database: Session = Depends(get_db)):
+    """Create a manual connector between two nodes of an outline mind map."""
+    _get_novel(database, novel_id)
+    if payload.from_id == payload.to_id:
+        raise HTTPException(status_code=422, detail="Cannot connect a node to itself")
+    # No duplicate (either direction) for the same graph.
+    exists = database.scalar(
+        select(GraphEdge).where(
+            GraphEdge.novel_id == novel_id, GraphEdge.kind == payload.kind,
+            ((GraphEdge.from_id == payload.from_id) & (GraphEdge.to_id == payload.to_id))
+            | ((GraphEdge.from_id == payload.to_id) & (GraphEdge.to_id == payload.from_id)),
+        ).limit(1)
+    )
+    if exists:
+        raise HTTPException(status_code=409, detail="Edge already exists")
+    edge = GraphEdge(
+        novel_id=novel_id, kind=payload.kind, from_id=payload.from_id, to_id=payload.to_id,
+        label=payload.label.strip(),
+    )
+    database.add(edge)
+    database.commit()
+    database.refresh(edge)
+    return _graph_edge(edge)
+
+
+@router.put("/graph-edges/{edge_id}", response_model=GraphEdgeOut)
+def update_graph_edge(edge_id: str, payload: GraphEdgeUpdate, database: Session = Depends(get_db)):
+    edge = database.get(GraphEdge, edge_id)
+    if not edge:
+        raise HTTPException(status_code=404, detail="Edge not found")
+    edge.label = payload.label.strip()
+    database.commit()
+    database.refresh(edge)
+    return _graph_edge(edge)
+
+
+@router.delete("/graph-edges/{edge_id}", status_code=204)
+def delete_graph_edge(edge_id: str, database: Session = Depends(get_db)):
+    edge = database.get(GraphEdge, edge_id)
+    if not edge:
+        raise HTTPException(status_code=404, detail="Edge not found")
+    database.delete(edge)
+    database.commit()
 
 
 # ---------------------------------------------------------------- characters

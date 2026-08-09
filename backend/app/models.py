@@ -84,6 +84,11 @@ class Chapter(Base):
         cascade="all, delete-orphan",
         order_by="ChapterVersion.version_number",
     )
+    scenes: Mapped[list["Scene"]] = relationship(
+        back_populates="chapter",
+        cascade="all, delete-orphan",
+        order_by="Scene.order",
+    )
 
 
 class ChapterVersion(Base):
@@ -98,6 +103,42 @@ class ChapterVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     chapter: Mapped[Chapter] = relationship(back_populates="versions")
+
+
+class Scene(Base):
+    """A beat/scene under a chapter — the second level of the outline mind map.
+    Deleted together with its chapter (cascade)."""
+    __tablename__ = "scenes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    chapter_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    chapter: Mapped[Chapter] = relationship(back_populates="scenes")
+
+
+class GraphEdge(Base):
+    """A user-drawn connector between two nodes on an outline mind map
+    (chapters / threads / characters), optionally with a small text label.
+    `kind` scopes an edge to one of the three graphs; from_id/to_id reference
+    the node ids of that graph (chapter/scene/thread/character). Auto-edges
+    (e.g. a thread's related_threads) are never stored here — only manual ones."""
+    __tablename__ = "graph_edges"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    novel_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("novels.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    from_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    to_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    label: Mapped[str] = mapped_column(String(60), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class Character(Base):

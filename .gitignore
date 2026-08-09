@@ -21,3 +21,6 @@ Thumbs.db
 # Local editor / agent tooling state — not part of the project
 .claude/
 .workbuddy/
+.mimosa/
+.zcode/
+gui-test-screenshots/

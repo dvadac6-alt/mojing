@@ -101,8 +101,30 @@ export type PlotThread = {
   updated_at: string
 }
 
-export type AIConfig = {
-  id: number
+/** A beat/scene node under a chapter — second level of the outline mind map. */
+export type SceneSummary = {
+  id: string
+  chapter_id: string
+  title: string
+  order: number
+  created_at: string
+  updated_at: string
+}
+
+/** A manual connector between two mind-map nodes (one of chapters/threads/
+ *  characters), with an optional small text label. Auto-edges (a thread's
+ *  related_threads, shared-伏笔 between characters) are never stored. */
+export type GraphEdge = {
+  id: string
+  novel_id: string
+  kind: 'chapters' | 'threads' | 'characters'
+  from_id: string
+  to_id: string
+  label: string
+  created_at: string
+}
+
+export type AIConfig = {  id: number
   provider: string
   name: string
   model: string
@@ -120,10 +142,12 @@ export type AIConfig = {
 export type Workspace = {
   novel: Novel
   chapters: ChapterSummary[]
+  scenes: SceneSummary[]
   characters: Character[]
   locations: Location[]
   world_settings: WorldSetting[]
   plot_threads: PlotThread[]
+  graph_edges: GraphEdge[]
 }
 
 export type StorageInfo = {
@@ -258,6 +282,20 @@ const api = {
     request<ChapterVersion[]>(`/chapters/${chapterId}/versions`),
   rollback: (chapterId: string, versionId: string) =>
     request<Chapter>(`/chapters/${chapterId}/rollback/${versionId}`, { method: 'POST' }),
+
+  // scenes (outline mind-map leaf nodes)
+  createScene: (novelId: string, chapterId: string, title: string) =>
+    request<SceneSummary>(`/novels/${novelId}/chapters/${chapterId}/scenes`, { method: 'POST', body: JSON.stringify({ title }) }),
+  renameScene: (id: string, title: string) =>
+    request<SceneSummary>(`/scenes/${id}`, { method: 'PUT', body: JSON.stringify({ title }) }),
+  deleteScene: (id: string) => request<void>(`/scenes/${id}`, { method: 'DELETE' }),
+
+  // graph edges (manual mind-map connectors)
+  createGraphEdge: (novelId: string, kind: GraphEdge['kind'], fromId: string, toId: string, label = '') =>
+    request<GraphEdge>(`/novels/${novelId}/graph-edges`, { method: 'POST', body: JSON.stringify({ kind, from_id: fromId, to_id: toId, label }) }),
+  setGraphEdgeLabel: (id: string, label: string) =>
+    request<GraphEdge>(`/graph-edges/${id}`, { method: 'PUT', body: JSON.stringify({ label }) }),
+  deleteGraphEdge: (id: string) => request<void>(`/graph-edges/${id}`, { method: 'DELETE' }),
 
   // characters
   listCharacters: (novelId: string) => request<Character[]>(`/novels/${novelId}/characters`),

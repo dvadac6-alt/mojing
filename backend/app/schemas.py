@@ -97,6 +97,46 @@ class ChapterVersionResponse(OrmModel):
     created_at: datetime
 
 
+# ---------- Scene (outline mind-map leaf) ----------
+class SceneSummary(OrmModel):
+    id: str
+    chapter_id: str
+    title: str
+    order: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class SceneCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
+class SceneUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+# ---------- Graph edge (manual mind-map connector) ----------
+class GraphEdgeOut(OrmModel):
+    id: str
+    novel_id: str
+    kind: str
+    from_id: str
+    to_id: str
+    label: str
+    created_at: datetime
+
+
+class GraphEdgeCreate(BaseModel):
+    kind: str = Field(min_length=1, max_length=20)
+    from_id: str = Field(min_length=1)
+    to_id: str = Field(min_length=1)
+    label: str = Field(default="", max_length=60)
+
+
+class GraphEdgeUpdate(BaseModel):
+    label: str = Field(default="", max_length=60)
+
+
 # ---------- Character ----------
 class CharacterCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
@@ -331,10 +371,12 @@ class WorkspaceResponse(BaseModel):
 class NovelDetailResponse(OrmModel):
     novel: NovelResponse
     chapters: list[ChapterSummary]
+    scenes: list[SceneSummary]
     characters: list[CharacterResponse]
     locations: list[LocationResponse]
     world_settings: list[WorldSettingResponse]
     plot_threads: list[PlotThreadResponse]
+    graph_edges: list[GraphEdgeOut]
 
 
 class ExportRequest(BaseModel):

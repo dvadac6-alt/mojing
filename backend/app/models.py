@@ -202,3 +202,20 @@ class AIConfig(Base):
     max_tokens: Mapped[int] = mapped_column(Integer, default=1200, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AIUsage(Base):
+    """Per-call token accounting for AI generations. One row per completed
+    streaming generation; aggregated by day/model on the overview usage panel."""
+    __tablename__ = "ai_usage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    novel_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("novels.id", ondelete="SET NULL"), nullable=True
+    )
+    model: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    mode: Mapped[str] = mapped_column(String(40), default="", nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

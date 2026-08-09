@@ -31,3 +31,17 @@ async def stream(
     max_tokens = int(config.max_tokens) if config else 1200
     async for piece in provider.stream(messages, temperature=temperature, max_tokens=max_tokens):
         yield piece
+
+
+async def stream_with_usage(
+    config: AIConfig | None, messages: list[dict[str, str]]
+):
+    """Like stream(), but also yields the provider so the caller can read its
+    `last_usage` dict after the stream completes (for token accounting). The
+    provider is yielded once at the start, before any text pieces."""
+    provider = provider_for(config)
+    temperature = float(config.temperature) if config else 0.85
+    max_tokens = int(config.max_tokens) if config else 1200
+    yield provider
+    async for piece in provider.stream(messages, temperature=temperature, max_tokens=max_tokens):
+        yield piece

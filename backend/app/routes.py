@@ -11,6 +11,7 @@ from .database import SessionLocal, get_db, reset_data_dir, set_data_dir, storag
 from .security import get_auth_token
 from .models import (
     AIConfig,
+    AIUsage,
     Chapter,
     ChapterStatus,
     ChapterVersion,
@@ -776,9 +777,32 @@ def _prepare_generation(req: AIGenerateRequest) -> tuple[list[dict[str, str]], A
 async def _ai_generate_stream(req: AIGenerateRequest):
     # Validation already happened in the route handler; stream the pieces out.
     messages, config, model_name = _prepare_generation(req)
-    async for piece in dispatcher.stream(config, messages):
-        yield f"data: {json.dumps({'text': piece, 'model': model_name}, ensure_ascii=False)}\n\n"
+    provider = None
+    try:
+        async for item in dispatcher.stream_with_usage(config, messages):
+            if provider is None:
+                # First item is the provider handle (for reading usage later).
+                provider = item
+                continue
+            yield f"data: {json.dumps({'text': item, 'model': model_name}, ensure_ascii=False)}\n\n"
+    except Exception as exc:  # provider/network error mid-stream
+        yield f"data: {json.dumps({'error': str(exc)[:200]}, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
+    # Record token usage if the provider reported it (real model only; the mock
+    # provider has no usage). Best-effort: never let accounting break the stream.
+    usage = getattr(provider, "last_usage", None) if provider else None
+    if usage:
+        try:
+            with SessionLocal() as database:
+                database.add(AIUsage(
+                    novel_id=req.novel_id, model=model_name, mode=req.mode or "",
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0),
+                    total_tokens=usage.get("total_tokens", 0),
+                ))
+                database.commit()
+        except Exception:
+            pass
 
 
 def _stream_response(req: AIGenerateRequest) -> StreamingResponse:
@@ -944,6 +968,65 @@ def _as_local_date(value) -> "object":
             return value.date()
         return value.astimezone().date()
     return datetime.now(timezone.utc).astimezone().date()
+
+
+# ---------------------------------------------------------------- AI usage (token stats)
+@router.get("/novels/{novel_id}/ai/usage")
+def novel_ai_usage(novel_id: str, days: int = Query(30, ge=1, le=366), database: Session = Depends(get_db)):
+    """Token usage stats for the overview panel. Aggregates AIUsage rows by day
+    (for the sparkline) and by model (for the breakdown)."""
+    _get_novel(database, novel_id)
+    since = _as_local_date_day(database, days)
+
+    rows = database.scalars(
+        select(AIUsage).where(AIUsage.novel_id == novel_id, AIUsage.created_at >= since)
+        .order_by(AIUsage.created_at)
+    ).all()
+
+    # Daily totals for the sparkline.
+    daily: dict[str, dict[str, int]] = {}
+    cursor = since.date() if hasattr(since, "date") else None
+    # Build a contiguous day map over the window.
+    from datetime import date as date_cls, timedelta as td
+    today = date_cls.today()
+    start_day = today - td(days=days - 1)
+    day = start_day
+    while day <= today:
+        daily[day.isoformat()] = {"prompt": 0, "completion": 0, "total": 0, "calls": 0}
+        day += td(days=1)
+    for r in rows:
+        d = _as_local_date(r.created_at).isoformat()
+        if d in daily:
+            daily[d]["prompt"] += r.prompt_tokens
+            daily[d]["completion"] += r.completion_tokens
+            daily[d]["total"] += r.total_tokens
+            daily[d]["calls"] += 1
+
+    # Per-model totals over the window.
+    by_model: dict[str, dict[str, int]] = {}
+    for r in rows:
+        key = r.model or "mock (offline)"
+        bucket = by_model.setdefault(key, {"total_tokens": 0, "calls": 0, "prompt": 0, "completion": 0})
+        bucket["total_tokens"] += r.total_tokens
+        bucket["prompt"] += r.prompt_tokens
+        bucket["completion"] += r.completion_tokens
+        bucket["calls"] += 1
+
+    series = [{"date": d, **vals} for d, vals in sorted(daily.items())]
+    return {
+        "novel_id": novel_id,
+        "days": days,
+        "series": series,
+        "total_tokens": sum(v["total_tokens"] for v in by_model.values()),
+        "total_calls": sum(v["calls"] for v in by_model.values()),
+        "by_model": [{"model": k, **v} for k, v in sorted(by_model.items(), key=lambda kv: -kv[1]["total_tokens"])],
+    }
+
+
+def _as_local_date_day(database: Session, days: int):
+    """A datetime `days` ago, for filtering recent usage rows."""
+    from datetime import datetime, timedelta
+    return datetime.now() - timedelta(days=days)
 
 
 # ---------------------------------------------------------------- search & export

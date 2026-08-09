@@ -349,6 +349,16 @@ const api = {
       active_days: number
       longest_streak: number
     }>(`/novels/${novelId}/activity?days=${days}`),
+  /** Token usage stats for the overview usage panel (daily + per-model). */
+  aiUsage: (novelId: string, days = 30) =>
+    request<{
+      novel_id: string
+      days: number
+      series: { date: string; prompt: number; completion: number; total: number; calls: number }[]
+      total_tokens: number
+      total_calls: number
+      by_model: { model: string; total_tokens: number; calls: number; prompt: number; completion: number }[]
+    }>(`/novels/${novelId}/ai/usage?days=${days}`),
   exportNovel: async (novelId: string, format: 'txt' | 'markdown', chapterIds?: string[]) => {
     const response = await fetch(`${API_BASE}/novels/${novelId}/export`, {
       method: 'POST',

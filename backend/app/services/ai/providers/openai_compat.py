@@ -21,6 +21,8 @@ class OpenAICompatProvider:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        # Filled in by stream() when the provider's final usage chunk arrives.
+        self.last_usage: dict[str, int] | None = None
 
     @property
     def available(self) -> bool:
@@ -48,6 +50,9 @@ class OpenAICompatProvider:
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": True,
+            # Ask the provider to emit a final chunk carrying token usage so we
+            # can account for cost. Most OpenAI-compatible servers honor this.
+            "stream_options": {"include_usage": True},
         }
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
@@ -65,6 +70,14 @@ class OpenAICompatProvider:
                         chunk = json.loads(data)
                     except json.JSONDecodeError:
                         continue
+                    # The usage object rides on a final chunk (choices == []).
+                    usage = chunk.get("usage")
+                    if usage:
+                        self.last_usage = {
+                            "prompt_tokens": usage.get("prompt_tokens", 0),
+                            "completion_tokens": usage.get("completion_tokens", 0),
+                            "total_tokens": usage.get("total_tokens", 0),
+                        }
                     delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content")
                     if delta:
                         yield delta

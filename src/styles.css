@@ -76,11 +76,12 @@ kbd { font-family: inherit; font-size: 10px; line-height: 1; border: 1px solid c
   transition: width .18s ease, flex-basis .18s ease;
 }
 .sidebar.collapsed { width: 58px; flex-basis: 58px; }
+.book-switch-wrap { position: relative; }
 .book-switch {
-  min-height: 64px; padding: 11px 10px; display: flex; align-items: center; gap: 10px;
+  width: 100%; min-height: 64px; padding: 11px 10px; display: flex; align-items: center; gap: 10px;
   background: rgba(255,255,255,.025); color: inherit; border-bottom: 1px solid rgba(255,255,255,.07);
 }
-.book-switch:hover { background: rgba(255,255,255,.06); }
+.book-switch:hover, .book-switch.open { background: rgba(255,255,255,.06); }
 .book-switch > b {
   width: 34px; height: 40px; flex: 0 0 34px; display: grid; place-items: center; border-radius: 5px 8px 8px 5px;
   background: linear-gradient(145deg, #a66b52, #7d4937); box-shadow: inset 3px 0 rgba(255,255,255,.14), 0 4px 12px rgba(0,0,0,.2);
@@ -89,6 +90,43 @@ kbd { font-family: inherit; font-size: 10px; line-height: 1; border: 1px solid c
 .book-switch > span { flex: 1; min-width: 0; display: flex; flex-direction: column; text-align: left; gap: 3px; }
 .book-switch strong { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .book-switch small { color: #8f9997; font-size: 10px; }
+.book-switch .switch-chev { color: #8f9997; transition: transform .16s ease; }
+.book-switch .switch-chev.flipped { transform: rotate(180deg); }
+
+/* Book-switcher dropdown. Anchored under the button, ~3 rows tall then scrolls. */
+.book-menu {
+  position: absolute; top: calc(100% + 4px); left: 8px; right: 8px; z-index: 60;
+  background: #2b302f; border: 1px solid rgba(255,255,255,.1); border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.4); padding: 6px; display: flex; flex-direction: column; gap: 4px;
+}
+.book-menu > label { padding: 4px 8px 2px; color: #788381; font-size: 9px; font-weight: 700; letter-spacing: .16em; }
+.book-menu-list {
+  display: flex; flex-direction: column; gap: 2px; overflow-y: auto;
+  /* Show ~3 items; the 4th+ scroll into view. Each row is ~52px. */
+  max-height: 162px;
+}
+.book-menu-list::-webkit-scrollbar { width: 6px; }
+.book-menu-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 3px; }
+.book-menu-empty { padding: 10px 8px; color: #7f8b88; font-size: 11px; }
+.book-menu-item {
+  display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: 6px; text-align: left;
+  background: transparent; color: #cdd6d3;
+}
+.book-menu-item:hover { background: rgba(255,255,255,.07); }
+.book-menu-item.active { background: rgba(166,107,82,.18); }
+.book-menu-item > b {
+  width: 26px; height: 30px; flex: 0 0 26px; display: grid; place-items: center; border-radius: 4px 6px 6px 4px;
+  background: linear-gradient(145deg, #6e5847, #4d3d31); color: #f3ece3; font-family: "Noto Serif SC", serif; font-size: 12px;
+}
+.book-menu-item > span { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.book-menu-item strong { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.book-menu-item small { color: #8f9997; font-size: 9px; }
+.book-menu-item .cur { color: #c89880; flex: 0 0 auto; }
+.book-menu-manage {
+  margin-top: 2px; padding: 7px 8px; display: flex; align-items: center; gap: 6px; border-radius: 6px;
+  background: transparent; color: #9aa3a0; font-size: 11px; border-top: 1px solid rgba(255,255,255,.06);
+}
+.book-menu-manage:hover { background: rgba(255,255,255,.06); color: #cdd6d3; }
 .nav-scroll { flex: 1; min-height: 0; padding: 12px 8px; overflow-y: auto; }
 .nav-scroll > label, .library-page > aside > label {
   display: block; padding: 3px 9px 7px; color: #788381; font-size: 9px; font-weight: 700; letter-spacing: .18em;
@@ -193,16 +231,72 @@ kbd { font-family: inherit; font-size: 10px; line-height: 1; border: 1px solid c
 .metric strong { margin: 3px 0; font-family: "Noto Serif SC", serif; font-size: 20px; }
 .metric small { color: #818a7c; font-size: 9px; }
 .overview-grid { max-width: 1500px; margin: 0 auto; display: grid; grid-template-columns: 1.25fr 1fr; gap: 14px; }
-.progress-panel { min-height: 280px; }
+/* With the activity calendar: row 1 = progress + heatmap side by side,
+   row 2 = 需要留意 + 最近章节 side by side, row 3 = agent promo full width. */
+.overview-grid-activity { grid-template-columns: 1.05fr 1.4fr; }
+.overview-grid-activity > .progress-panel { grid-column: 1; grid-row: 1; }
+.overview-grid-activity > .activity-panel { grid-column: 2; grid-row: 1; }
+.overview-grid-activity > .attention-panel { grid-column: 1; grid-row: 2; }
+.overview-grid-activity > .recent { grid-column: 2; grid-row: 2; }
+.overview-grid-activity > .agent-promo { grid-column: 1 / -1; grid-row: 3; }
+@media (max-width: 760px) {
+  .overview-grid-activity { grid-template-columns: 1fr; }
+  .overview-grid-activity > .activity-panel,
+  .overview-grid-activity > .attention-panel,
+  .overview-grid-activity > .recent,
+  .overview-grid-activity > .agent-promo { grid-column: 1; grid-row: auto; }
+}
+.progress-panel { min-height: 280px; display: flex; flex-direction: column; }
 .goal { padding: 18px 20px 8px; }
 .goal strong { font-family: "Noto Serif SC", serif; font-size: 24px; }
 .goal span { margin-left: 7px; color: #999b97; font-size: 10px; }
 .big-progress { height: 8px; margin: 0 20px; border-radius: 5px; background: #ebe8e0; overflow: hidden; }
 .big-progress i { display: block; width: 62%; height: 100%; background: linear-gradient(90deg,#5d706d,#9b715c); border-radius: inherit; }
-.week-bars { height: 140px; padding: 24px 25px 14px; display: flex; justify-content: space-between; align-items: flex-end; }
-.week-bars > span { height: 100%; width: 9%; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 7px; }
-.week-bars i { width: 100%; max-width: 24px; min-height: 8px; border-radius: 4px 4px 2px 2px; background: #9baaa4; }
+.week-bars { height: 130px; padding: 18px 20px 8px; display: flex; justify-content: space-between; align-items: flex-end; }
+.week-bars > span { height: 100%; width: 9%; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 5px; }
+.week-bars i { width: 100%; max-width: 26px; min-height: 3px; border-radius: 4px 4px 2px 2px; background: #e3ded4; transition: height .3s ease; }
+.week-bars i.has-words { background: linear-gradient(180deg, #7a9d7e, #4e7a5e); }
 .week-bars small { color: #969994; font-size: 9px; }
+.week-bars em { color: #6f7a76; font-size: 9px; font-style: normal; font-weight: 600; line-height: 1; }
+.week-bars em:empty::before { content: '—'; color: #c4c0b8; font-weight: 400; }
+.week-summary { margin-top: auto; padding: 10px 20px 14px; color: #8a8f8b; font-size: 10px; border-top: 1px solid #efece5; }
+.week-summary b { color: #4e7a5e; font-size: 12px; }
+
+/* Activity calendar (GitHub-style heatmap) */
+.activity-panel { min-height: 280px; padding: 0; display: flex; }
+.activity-calendar { flex: 1; display: flex; flex-direction: column; padding: 16px 18px; min-width: 0; }
+.activity-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 12px; }
+.activity-head strong { font-size: 13px; }
+.activity-head small { display: block; margin-top: 3px; color: #8a8f8b; font-size: 9px; line-height: 1.6; }
+.activity-legend { display: flex; align-items: center; gap: 4px; color: #969994; font-size: 9px; flex-shrink: 0; }
+.activity-loading { color: #969994; font-size: 11px; padding: 30px 0; text-align: center; }
+.activity-scroll { display: none; }
+/* Flow grid: every column has the SAME fixed width so all rows align and the
+   horizontal gap (4px) equals the vertical gap (4px). auto-fill means the
+   COLUMN COUNT grows/shrinks with the container — wider panel => more cells
+   per row, narrower => fewer — while each cell stays a uniform square.
+   A fixed cell size (not 1fr) is what keeps the last partial row from being
+   stretched and the three rows evenly spaced. */
+.ac-grid {
+  --ac-size: 13px;
+  --ac-gap: 4px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, var(--ac-size));
+  grid-auto-rows: var(--ac-size);
+  gap: var(--ac-gap);
+  justify-content: center;
+  flex: 1;
+  align-content: start;
+  padding: 4px 0;
+}
+@media (min-width: 1500px) { .ac-grid { --ac-size: 15px; } }
+.ac-cell { width: var(--ac-size); height: var(--ac-size); border-radius: 2px; background: #ebede0; }
+.ac-cell.lv0 { background: #ebede0; }
+.ac-cell.lv1 { background: #c6e48b; }
+.ac-cell.lv2 { background: #7bc96f; }
+.ac-cell.lv3 { background: #3aa652; }
+.ac-cell.lv4 { background: #1f7a33; }
+.activity-legend .ac-cell { width: 11px; height: 11px; }
 .attention { padding: 8px 12px; }
 .attention > div { min-height: 58px; padding: 10px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #ece9e2; color: #7d827e; }
 .attention > div:last-child { border-bottom: 0; }
@@ -309,6 +403,10 @@ kbd { font-family: inherit; font-size: 10px; line-height: 1; border: 1px solid c
 .generate { width: 100%; height: 36px; margin-top: 14px; display: flex; align-items: center; justify-content: center; gap: 7px; border-radius: 6px; background: #354143; color: white; font-size: 10px; }
 .generate:hover { background: #445153; }
 .generate kbd { margin-left: auto; margin-right: 5px; border: 0; }
+.ai-generate-row { display: flex; gap: 8px; margin-top: 14px; }
+.ai-generate-row .generate { margin-top: 0; flex: 1; }
+.generate.stop { flex: 0 0 auto; width: auto; padding: 0 16px; background: #6b4a4a; }
+.generate.stop:hover { background: #7d5858; }
 .safe-note { margin-top: 9px; display: flex; align-items: center; justify-content: center; gap: 5px; color: #8b918b; font-size: 8px; }
 .agent-body { text-align: center; }
 .agent-orb { width: 70px; height: 70px; margin: 16px auto 9px; display: grid; place-items: center; border-radius: 50%; background: radial-gradient(circle at 35% 30%,#68797a,#303b3d); color: #efc09c; box-shadow: 0 0 0 9px #ecebe5, 0 0 0 10px #dbd8cf; }

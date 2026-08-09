@@ -1,6 +1,10 @@
 node_modules/
 dist/
 .vite/
+backend/data/
+release/
+__pycache__/
+*.py[cod]
 
 *.log
 *.local

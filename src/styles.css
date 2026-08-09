@@ -250,6 +250,8 @@ kbd { font-family: inherit; font-size: 10px; line-height: 1; border: 1px solid c
 .editor-toolbar > span strong { color: #505653; }
 .editor-toolbar > b { flex: 1; }
 .editor-toolbar > em { display: flex; align-items: center; gap: 4px; color: #718274; font-size: 8px; font-style: normal; white-space: nowrap; }
+.editor-toolbar > em.saving { color: #9a765f; }
+.editor-toolbar > em.error { color: #a44f4c; }
 .editor-toolbar .assist-toggle { padding: 0 9px; }
 .editor-toolbar .assist-toggle.active { background: #364143; color: #f4e7dd; }
 .paper-wrap { flex: 1; min-height: 0; overflow: auto; padding: 28px 28px 50px; }
@@ -262,6 +264,18 @@ kbd { font-family: inherit; font-size: 10px; line-height: 1; border: 1px solid c
 .ornament { margin: 19px 0 37px; display: flex; align-items: center; justify-content: center; gap: 9px; color: #bd9b83; }
 .ornament i { width: 37px; height: 1px; background: #d8c5b8; }
 .paper p { margin: 0 0 1.25em; color: #383c3a; font-family: "Noto Serif SC", serif; font-size: 15px; line-height: 2.1; text-align: justify; text-indent: 2em; }
+.editable-paper { display: flex; flex-direction: column; }
+.chapter-title-input { width:100%; border:0; outline:0; background:transparent; color:#242a28; font:600 24px "Noto Serif SC",serif; letter-spacing:.08em; text-align:center; }
+.chapter-title-input::placeholder { color:#aaa8a0; }
+.manuscript-textarea { width:100%; min-height:430px; flex:1; resize:none; border:0; outline:0; background:transparent; color:#383c3a; font:15px/2.1 "Noto Serif SC",serif; text-align:justify; white-space:pre-wrap; overflow:visible; }
+.manuscript-textarea::placeholder { color:#b4b1a8; }
+.writing-state { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; background:#f3f0e9; color:#717873; }
+.writing-state > span { width:48px; height:48px; display:grid; place-items:center; border-radius:12px; background:#e4e8e3; color:#65776d; }
+.writing-state h2 { margin:5px 0 0; color:#303837; font:600 17px "Noto Serif SC",serif; }
+.writing-state p { margin:0; color:#858a85; font-size:10px; }
+.writing-state small { margin-top:5px; color:#9b9e99; font-size:8px; }
+.writing-state.loading > span { animation:pulse-db 1.2s ease-in-out infinite; }
+@keyframes pulse-db { 50% { transform:translateY(-2px); box-shadow:0 8px 20px rgba(66,80,75,.14); } }
 .caret { display: inline-block; width: 1px; height: 1.25em; margin-left: 2px; vertical-align: -.2em; background: #8e563f; animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 .editor-status { height: 27px; flex: 0 0 27px; padding: 0 12px; display: flex; align-items: center; gap: 18px; background: #f8f7f3; border-top: 1px solid #dad7cf; color: #8d918c; font-size: 8px; }

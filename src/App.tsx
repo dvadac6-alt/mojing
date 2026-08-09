@@ -1,4 +1,5 @@
-import { useState, type ElementType, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ElementType, type ReactNode } from 'react'
+import { workspaceApi, type Chapter, type Workspace } from './workspaceApi'
 import {
   AlertTriangle, Archive, Bell, BookHeart, BookMarked, BookOpen, Bot, BrainCircuit,
   Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Clock3, CloudOff,
@@ -109,7 +110,7 @@ function Sidebar({ page, collapsed, onPage, onCollapse }: { page: Page; collapse
 }
 
 function StatusBar() {
-  return <footer className="statusbar"><span><i><Check size={10} /></i> 本地数据库正常</span><span><HardDrive size={12} /> 上次备份：今天 09:30</span><b /><span><CloudOff size={12} /> 本地模式</span><span>UTF-8</span><span>UI Preview 0.1.0</span></footer>
+  return <footer className="statusbar"><span><i><Check size={10} /></i> SQLite 本地数据库</span><span><HardDrive size={12} /> 自动保存已启用</span><b /><span><CloudOff size={12} /> 本地模式</span><span>UTF-8</span><span>Mojing 0.2.0</span></footer>
 }
 
 function PageHeader({ eyebrow, title, desc, actions }: { eyebrow?: string; title: string; desc?: string; actions?: ReactNode }) {
@@ -160,14 +161,133 @@ function Attention({ icon: Icon, title, note, urgent }: { icon: ElementType; tit
 
 function WritingPage({ assistant, onAssistant }: { assistant: boolean; onAssistant: () => void }) {
   const [tab, setTab] = useState('quick')
+  const [workspace, setWorkspace] = useState<Workspace | null>(null)
+  const [activeId, setActiveId] = useState('')
+  const [draftTitle, setDraftTitle] = useState('')
+  const [draft, setDraft] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const [saveState, setSaveState] = useState<'loading' | 'saved' | 'saving' | 'error'>('loading')
+  const [savedAt, setSavedAt] = useState('')
+  const [reloadKey, setReloadKey] = useState(0)
+  const [creating, setCreating] = useState(false)
+  const savedSignature = useRef('')
+  const paperWrapRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoadError('')
+    setSaveState('loading')
+    workspaceApi.load().then(data => {
+      if (cancelled) return
+      const preferred = data.chapters.find(chapter => chapter.status === 'writing') ?? data.chapters[0]
+      setWorkspace(data)
+      if (preferred) {
+        setActiveId(preferred.id)
+        setDraftTitle(preferred.title)
+        setDraft(preferred.content)
+        savedSignature.current = `${preferred.title}\u0000${preferred.content}`
+      }
+      setSaveState('saved')
+      setSavedAt(new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }))
+    }).catch(error => {
+      if (cancelled) return
+      setLoadError(error instanceof Error ? error.message : '无法连接本地服务')
+      setSaveState('error')
+    })
+    return () => { cancelled = true }
+  }, [reloadKey])
+
+  const activeChapter = workspace?.chapters.find(chapter => chapter.id === activeId)
+  const currentSignature = `${draftTitle}\u0000${draft}`
+
+  useEffect(() => {
+    paperWrapRef.current?.scrollTo({ top: 0 })
+  }, [activeId])
+
+  const persistChapter = async (chapterId = activeId, title = draftTitle, content = draft) => {
+    if (!chapterId) return null
+    const normalizedTitle = title.trim() || '未命名章节'
+    setSaveState('saving')
+    try {
+      const updated = await workspaceApi.updateChapter(chapterId, {
+        title: normalizedTitle,
+        content,
+        status: content.trim() ? 'writing' : 'draft',
+      })
+      setWorkspace(current => current ? {
+        ...current,
+        novel: {
+          ...current.novel,
+          total_words: current.chapters.reduce((total, chapter) => total + (chapter.id === updated.id ? updated.word_count : chapter.word_count), 0),
+        },
+        chapters: current.chapters.map(chapter => chapter.id === updated.id ? updated : chapter),
+      } : current)
+      if (chapterId === activeId) {
+        setDraftTitle(updated.title)
+        savedSignature.current = `${updated.title}\u0000${updated.content}`
+      }
+      setSaveState('saved')
+      setSavedAt(new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }))
+      return updated
+    } catch {
+      setSaveState('error')
+      return null
+    }
+  }
+
+  useEffect(() => {
+    if (!activeChapter || currentSignature === savedSignature.current) return
+    setSaveState('saving')
+    const timer = window.setTimeout(() => { void persistChapter() }, 1000)
+    return () => window.clearTimeout(timer)
+  }, [currentSignature, activeChapter?.id])
+
+  const selectChapter = async (chapter: Chapter) => {
+    if (chapter.id === activeId) return
+    if (activeId && currentSignature !== savedSignature.current) await persistChapter()
+    setActiveId(chapter.id)
+    setDraftTitle(chapter.title)
+    setDraft(chapter.content)
+    savedSignature.current = `${chapter.title}\u0000${chapter.content}`
+    setSaveState('saved')
+  }
+
+  const createChapter = async () => {
+    if (!workspace || creating) return
+    if (activeId && currentSignature !== savedSignature.current) await persistChapter()
+    setCreating(true)
+    try {
+      const created = await workspaceApi.createChapter(workspace.novel.id, `未命名章节 ${workspace.chapters.length + 1}`)
+      setWorkspace(current => current ? {
+        ...current,
+        novel: { ...current.novel, chapter_count: current.novel.chapter_count + 1 },
+        chapters: [...current.chapters, created],
+      } : current)
+      setActiveId(created.id)
+      setDraftTitle(created.title)
+      setDraft(created.content)
+      savedSignature.current = `${created.title}\u0000${created.content}`
+      setSaveState('saved')
+    } catch {
+      setSaveState('error')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  if (loadError) return <div className="writing-state"><span><AlertTriangle size={24} /></span><h2>本地写作服务未连接</h2><p>{loadError}</p><Button kind="primary" onClick={() => setReloadKey(value => value + 1)}>重新连接</Button><small>请使用 npm run dev 或 npm run desktop 启动完整应用。</small></div>
+  if (!workspace || !activeChapter) return <div className="writing-state loading"><span><Database size={24} /></span><h2>正在打开本地作品</h2><p>连接 SQLite 数据库并读取最近章节…</p></div>
+
+  const paragraphs = draft.trim() ? draft.split(/\n\s*\n/).length : 0
+  const readingMinutes = Math.max(1, Math.ceil(activeChapter.word_count / 450))
   return <div className="writing-page">
-    <aside className="chapters-pane"><div className="pane-title"><div><label>卷一 · 临川旧雨</label><strong>章节目录</strong></div><button><Plus size={16} /></button></div><SearchBox text="搜索章节或正文" />
-      <div className="chapter-list">{chapters.map((c,i) => <button className={i === 3 ? 'active' : ''} key={c[0]}><GripVertical size={13} /><b>{c[0]}</b><span><strong>{c[1]}</strong><small>{c[2]} 字</small></span>{i < 4 && <Check size={12} />}</button>)}</div>
-      <button className="new-chapter"><Plus size={14} />新建章节</button>
+    <aside className="chapters-pane"><div className="pane-title"><div><label>{workspace.novel.title}</label><strong>章节目录</strong></div><button onClick={createChapter} disabled={creating}><Plus size={16} /></button></div><SearchBox text="搜索章节或正文" />
+      <div className="chapter-list">{workspace.chapters.map(chapter => <button className={chapter.id === activeId ? 'active' : ''} key={chapter.id} onClick={() => void selectChapter(chapter)}><GripVertical size={13} /><b>{String(chapter.order).padStart(2, '0')}</b><span><strong>{chapter.title}</strong><small>{chapter.word_count.toLocaleString()} 字</small></span>{chapter.status === 'completed' && <Check size={12} />}</button>)}</div>
+      <button className="new-chapter" onClick={createChapter} disabled={creating}><Plus size={14} />{creating ? '正在创建…' : '新建章节'}</button>
     </aside>
-    <section className="editor"><div className="editor-toolbar"><button><Undo2 size={15} /></button><button><Redo2 size={15} /></button><i /><span>第 04 章 <ChevronRight size={12} /> <strong>玉佩上的裂痕</strong></span><b /><em><Check size={12} />已保存 19:42</em><button><Save size={14} />保存</button><button><Focus size={14} /></button><button className={'assist-toggle ' + (assistant ? 'active' : '')} onClick={onAssistant}><WandSparkles size={14} />辅助中心</button></div>
-      <div className="paper-wrap"><article className="paper"><label>第四章</label><h1>玉佩上的裂痕</h1><div className="ornament"><i /><Feather size={14} /><i /></div>{manuscript.map((p,i) => <p key={i}>{p}{i === manuscript.length - 1 && <span className="caret" />}</p>)}</article></div>
-      <footer className="editor-status"><span>本章 3,086 字</span><span>全文 124,680 字</span><b /><span>段落 18</span><span>预计阅读 7 分钟</span></footer>
+    <section className="editor"><div className="editor-toolbar"><button><Undo2 size={15} /></button><button><Redo2 size={15} /></button><i /><span>第 {String(activeChapter.order).padStart(2, '0')} 章 <ChevronRight size={12} /> <strong>{draftTitle || '未命名章节'}</strong></span><b /><em className={saveState}><Check size={12} />{saveState === 'saving' ? '正在保存…' : saveState === 'error' ? '保存失败' : `已保存 ${savedAt}`}</em><button onClick={() => void persistChapter()}><Save size={14} />保存</button><button><Focus size={14} /></button><button className={'assist-toggle ' + (assistant ? 'active' : '')} onClick={onAssistant}><WandSparkles size={14} />辅助中心</button></div>
+      <div className="paper-wrap" ref={paperWrapRef}><article className="paper editable-paper"><label>第 {activeChapter.order} 章</label><input className="chapter-title-input" value={draftTitle} onChange={event => setDraftTitle(event.target.value)} aria-label="章节标题" /><div className="ornament"><i /><Feather size={14} /><i /></div><textarea className="manuscript-textarea" value={draft} onChange={event => setDraft(event.target.value)} aria-label="章节正文" placeholder="从这里开始写作……" spellCheck={false} /></article></div>
+      <footer className="editor-status"><span>本章 {draft.replace(/\s/g, '').length.toLocaleString()} 字</span><span>全文 {workspace.novel.total_words.toLocaleString()} 字</span><b /><span>段落 {paragraphs}</span><span>预计阅读 {readingMinutes} 分钟</span></footer>
     </section>
     {assistant && <aside className="assistant"><div className="assistant-title"><span><Sparkles size={14} /></span><strong>辅助中心</strong><button onClick={onAssistant}><PanelRightClose size={15} /></button></div><div className="assistant-tabs"><button className={tab === 'quick' ? 'active' : ''} onClick={() => setTab('quick')}>快捷生成</button><button className={tab === 'agent' ? 'active' : ''} onClick={() => setTab('agent')}>Agent</button><button className={tab === 'ref' ? 'active' : ''} onClick={() => setTab('ref')}>参考</button></div>{tab === 'quick' ? <QuickAI /> : tab === 'agent' ? <AgentPanel /> : <ReferencePanel />}</aside>}
   </div>

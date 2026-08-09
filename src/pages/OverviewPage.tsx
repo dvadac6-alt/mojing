@@ -8,11 +8,12 @@ import type { Page } from '../lib/constants'
 import { fmt } from '../lib/constants'
 import { Button, PageHeader, PanelTitle, Scroll } from '../components/ui'
 import { ActivityCalendar, type ActivityData } from '../components/ActivityCalendar'
+import { UsagePanel, type UsageData } from '../components/UsagePanel'
 
 const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
 
-/** Sum the activity series into this week's per-day word counts (Mon→Sun). */
-function thisWeekWords(series: { date: string; words: number }[]): number[] {
+/** Sum the activity series into the current week's per-day word counts (Mon→Sun). */
+function weekWords(series: { date: string; words: number }[]): number[] {
   const today = new Date()
   // Monday as the first day of the week.
   const mondayOffset = (today.getDay() + 6) % 7
@@ -50,9 +51,21 @@ export function OverviewPage({ workspace, onWrite, onGoto }: { workspace: Worksp
     return () => { cancelled = true }
   }, [novel.id])
 
-  const weekWords = activity ? thisWeekWords(activity.series) : [0, 0, 0, 0, 0, 0, 0]
-  const weekMax = Math.max(1, ...weekWords)
-  const weekTotal = weekWords.reduce((a, b) => a + b, 0)
+  const [usage, setUsage] = useState<UsageData | null>(null)
+  const [usageLoading, setUsageLoading] = useState(true)
+  useEffect(() => {
+    let cancelled = false
+    setUsageLoading(true)
+    workspaceApi.aiUsage(novel.id, 30)
+      .then(d => { if (!cancelled) setUsage(d) })
+      .catch(() => { /* usage is non-critical; leave empty */ })
+      .finally(() => { if (!cancelled) setUsageLoading(false) })
+    return () => { cancelled = true }
+  }, [novel.id])
+
+  const thisWeek = activity ? weekWords(activity.series) : [0, 0, 0, 0, 0, 0, 0]
+  const weekMax = Math.max(1, ...thisWeek)
+  const weekTotal = thisWeek.reduce((a, b) => a + b, 0)
 
   return <Scroll>
     <PageHeader eyebrow="作品概览" title={novel.title} desc={novel.description || '暂无简介'}
@@ -64,26 +77,22 @@ export function OverviewPage({ workspace, onWrite, onGoto }: { workspace: Worksp
       <Metric icon={Feather} label="目标进度" value={`${progress}%`} note={novel.genre || '连载中'} tone="clay" />
     </div>
     <div className="overview-grid overview-grid-activity">
-      {/* 创作进度 + 热力图并排放在第一行 */}
+      {/* 创作进度 + 热力图 + token 用量统计并排放在第一行 */}
       <section className="panel progress-panel">
         <PanelTitle title="创作进度" action="查看统计" />
         <div className="goal"><strong>{fmt(novel.total_words)}</strong><span>/ {fmt(novel.target_words)} 字</span></div>
         <div className="big-progress"><i style={{ width: progress + '%' }} /></div>
         <div className="week-bars">
-          {weekWords.map((w, i) => {
-            // Bar height tracks this day's words relative to the week's peak.
-            const heightPct = w > 0 ? Math.max(8, Math.round((w / weekMax) * 100)) : 0
-            return <span key={i}>
-              <i style={{ height: heightPct + '%' }} className={w > 0 ? 'has-words' : ''} />
-              <small>{WEEKDAY_LABELS[i]}</small>
-              <em>{w > 0 ? fmt(w) : '—'}</em>
-            </span>
-          })}
+          {/* 仅显示当前周，星期一至星期日 */}
+          <WeekRow words={thisWeek} peak={weekMax} />
         </div>
         <footer className="week-summary">本周写作 <b>{fmt(weekTotal)}</b> 字</footer>
       </section>
       <section className="panel activity-panel">
         <ActivityCalendar data={activity} loading={actLoading} />
+      </section>
+      <section className="panel usage-card">
+        <UsagePanel data={usage} loading={usageLoading} days={30} />
       </section>
       {/* 需要留意 + 最近章节 并排放在第二行 */}
       <section className="panel attention-panel"><PanelTitle title="需要留意" action="打开伏笔看板" onAction={() => onGoto('threads')} /><div className="attention">
@@ -96,6 +105,23 @@ export function OverviewPage({ workspace, onWrite, onGoto }: { workspace: Worksp
       <section className="panel agent-promo"><span><WandSparkles size={22} /></span><div><label>创作助手</label><h3>让 AI 帮你续写下一章</h3><p>结合大纲、角色和未收束伏笔生成可审阅草稿。</p></div><Button kind="dark" onClick={onWrite}><Sparkles size={15} />开始创作</Button></section>
     </div>
   </Scroll>
+}
+
+const WEEK_BAR_MAX = 32 // tallest bar (px) inside a week row
+
+/** One week row of the progress chart: value above the bar, weekday below. */
+function WeekRow({ words, peak }: { words: number[]; peak: number }) {
+  return <div className="week-row">
+    {words.map((w, i) => {
+      // Bar height tracks this day's words relative to the week's peak.
+      const height = w > 0 ? Math.max(3, Math.round((w / peak) * WEEK_BAR_MAX)) : 0
+      return <span key={i}>
+        <em>{w > 0 ? fmt(w) : '—'}</em>
+        <i style={{ height }} className={w > 0 ? 'has-words' : ''} />
+        <small>{WEEKDAY_LABELS[i]}</small>
+      </span>
+    })}
+  </div>
 }
 
 function Metric({ icon: Icon, label, value, note, tone }: { icon: ElementType; label: string; value: string; note: string; tone: string }) {

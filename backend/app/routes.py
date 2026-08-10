@@ -950,6 +950,16 @@ def ai_expand(req: AIGenerateRequest):
     return _stream_response(req)
 
 
+@router.post("/ai/worldsetting")
+def ai_worldsetting(req: AIGenerateRequest):
+    """Generate a world-setting entry from a rough idea (name/category/desc)."""
+    req.mode = "worldsetting"
+    req.target_words = 300
+    # Existing settings are the reference so the AI doesn't duplicate/conflict.
+    req.context.settings = True
+    return _stream_response(req)
+
+
 @router.post("/ai/suggest-threads")
 def ai_suggest_threads(req: AIConsistencyRequest, database: Session = Depends(get_db)):
     _get_novel(database, req.novel_id)

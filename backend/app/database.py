@@ -206,10 +206,14 @@ def _migrate_legacy_db(target: Path) -> None:
 
 def init_db() -> None:
     from . import models  # noqa: F401
+    from .backup import backup_once
 
     _migrate_legacy_db(DATABASE_PATH)
     Base.metadata.create_all(bind=engine)
     _migrate_legacy_columns()
+    # (#2) Snapshot the DB on every launch — guards against file-level loss
+    # that chapter_versions cannot (disk fault, accidental delete, sync corruption).
+    backup_once()
 
 
 def _migrate_legacy_columns() -> None:
@@ -249,7 +253,10 @@ def set_data_dir(new_dir: str | Path) -> dict:
         target_dir = Path(str(new_dir)).expanduser()
         target_dir.mkdir(parents=True, exist_ok=True)
         target_db = target_dir / DB_FILENAME
-        if not target_db.exists() and DATABASE_PATH.exists():
+        # (#8) If the target already has a DB we mount it as-is instead of
+        # silently overwriting — record the case so the UI can warn the user.
+        mounted_existing = target_db.exists()
+        if not mounted_existing and DATABASE_PATH.exists():
             _copy_db(DATABASE_PATH, target_db)
         _write_config(target_dir)
         engine.dispose()
@@ -264,7 +271,9 @@ def set_data_dir(new_dir: str | Path) -> dict:
         DATABASE_PATH = target_db
         Base.metadata.create_all(bind=engine)
         _migrate_legacy_columns()
-        return storage_info()
+        info = storage_info()
+        info["mounted_existing"] = mounted_existing
+        return info
 
 
 def reset_data_dir() -> dict:

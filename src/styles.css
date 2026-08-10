@@ -752,6 +752,16 @@ kbd { font-family: inherit; font-size: 10px; line-height: 1; border: 1px solid c
 /* Settings */
 .settings-page { height: 100%; display: flex; }
 .settings-page > aside { width: 220px; flex: 0 0 220px; padding: 24px 12px; background: #f0eee7; border-right: 1px solid #d7d4cb; }
+.update-banner { margin: 0 6px 14px; padding: 10px 11px; display: flex; flex-direction: column; gap: 8px; border: 1px solid #c9b8a8; border-radius: 8px; background: #fdf4ea; }
+.update-banner > span { color: #8a5a2e; font-size: 10px; line-height: 1.6; }
+.update-banner > span b { color: #6b4423; }
+.update-banner > svg { color: #a67538; }
+.update-banner .btn { width: 100%; justify-content: center; }
+.err-boundary { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px; text-align: center; background: #f5f2eb; }
+.err-boundary .err-icon { width: 56px; height: 56px; display: grid; place-items: center; border-radius: 50%; background: #fbecea; color: #a3483f; }
+.err-boundary h2 { margin: 0; font-family: "Noto Serif SC", serif; font-size: 20px; color: #2b3030; }
+.err-boundary p { margin: 0; max-width: 380px; color: #7d827f; font-size: 12px; line-height: 1.7; }
+.err-boundary code { max-width: 560px; padding: 8px 12px; border-radius: 6px; background: #fffdf8; border: 1px solid #ebe8e0; color: #a3483f; font-size: 10px; word-break: break-all; }
 .settings-page > aside > div { padding: 0 10px 18px; display: flex; flex-direction: column; }
 .settings-page > aside label { margin: 0 0 4px; }
 .settings-page > aside strong { font-family: "Noto Serif SC", serif; font-size: 16px; }
@@ -759,6 +769,11 @@ kbd { font-family: inherit; font-size: 10px; line-height: 1; border: 1px solid c
 .settings-page nav button.active { background: white; color: #434a47; box-shadow: inset 2px 0 var(--accent); }
 .settings-page > section { flex: 1; padding: 30px 42px 60px; overflow-y: auto; }
 .settings-page .page-header { max-width: 900px; }
+.backup-list { margin-top: 10px; border: 1px solid #ebe8e0; border-radius: 7px; overflow: hidden; }
+.backup-list > div { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 8px 12px; border-bottom: 1px solid #f0ede5; font-size: 10px; }
+.backup-list > div:last-child { border-bottom: 0; }
+.backup-list > div > span { color: #555b57; font-family: ui-monospace, monospace; }
+.backup-list > div > small { color: #9a9d98; }
 .setting-block { max-width: 900px; margin: 0 auto 28px; display: grid; grid-template-columns: 190px 1fr; gap: 28px; }
 .setting-block > header h2 { margin: 0 0 5px; font-family: "Noto Serif SC", serif; font-size: 13px; }
 .setting-block > header p { margin: 0; color: #959894; font-size: 8px; line-height: 1.5; }

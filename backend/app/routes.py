@@ -77,80 +77,51 @@ _INSTANCE_STARTED_AT = time.time()
 
 # ---------------------------------------------------------------- helpers
 def _chapter(c: Chapter) -> ChapterResponse:
-    return ChapterResponse(
-        id=c.id, novel_id=c.novel_id, title=c.title, content=c.content, order=c.order,
-        word_count=c.word_count, status=c.status.value, created_at=c.created_at, updated_at=c.updated_at,
-    )
+    return ChapterResponse.model_validate(c)
 
 
 def _chapter_summary(c: Chapter) -> ChapterSummary:
     """Same row as _chapter but without the body — the workspace/list payload
     only needs metadata; full content is fetched separately when editing."""
-    return ChapterSummary(
-        id=c.id, novel_id=c.novel_id, title=c.title, order=c.order,
-        word_count=c.word_count, status=c.status.value, created_at=c.created_at, updated_at=c.updated_at,
-    )
+    return ChapterSummary.model_validate(c)
 
 
 def _scene(s: Scene) -> SceneSummary:
-    return SceneSummary(
-        id=s.id, chapter_id=s.chapter_id, title=s.title, order=s.order,
-        created_at=s.created_at, updated_at=s.updated_at,
-    )
+    return SceneSummary.model_validate(s)
 
 
 def _graph_edge(e: GraphEdge) -> GraphEdgeOut:
-    return GraphEdgeOut(
-        id=e.id, novel_id=e.novel_id, kind=e.kind, from_id=e.from_id,
-        to_id=e.to_id, label=e.label, created_at=e.created_at,
-    )
+    return GraphEdgeOut.model_validate(e)
 
 
 def _novel(novel: Novel, database: Session) -> NovelResponse:
+    # Aggregated fields (total_words/chapter_count) need a sub-query, so the
+    # base attributes are validated from the ORM row and the two aggregates are
+    # filled in afterwards.
     total_words = database.scalar(
         select(func.coalesce(func.sum(Chapter.word_count), 0)).where(Chapter.novel_id == novel.id)
     ) or 0
     chapter_count = database.scalar(select(func.count(Chapter.id)).where(Chapter.novel_id == novel.id)) or 0
-    return NovelResponse(
-        id=novel.id, title=novel.title, description=novel.description, author=novel.author,
-        genre=novel.genre, target_words=novel.target_words, status=novel.status.value,
-        total_words=total_words, chapter_count=chapter_count, created_at=novel.created_at, updated_at=novel.updated_at,
-    )
+    resp = NovelResponse.model_validate(novel)
+    resp.total_words = total_words
+    resp.chapter_count = chapter_count
+    return resp
 
 
 def _character(c: Character) -> CharacterResponse:
-    return CharacterResponse(
-        id=c.id, novel_id=c.novel_id, name=c.name, aliases=c.aliases, role=c.role, color=c.color,
-        description=c.description, personality=c.personality, background=c.background, appearance=c.appearance,
-        abilities=c.abilities, relationships=c.relationships or {},
-        first_appearance_chapter_id=c.first_appearance_chapter_id,
-        created_at=c.created_at, updated_at=c.updated_at,
-    )
+    return CharacterResponse.model_validate(c)
 
 
 def _location(l: Location) -> LocationResponse:
-    return LocationResponse(
-        id=l.id, novel_id=l.novel_id, name=l.name, description=l.description, type=l.type,
-        parent_location_id=l.parent_location_id, first_appearance_chapter_id=l.first_appearance_chapter_id,
-        created_at=l.created_at, updated_at=l.updated_at,
-    )
+    return LocationResponse.model_validate(l)
 
 
 def _setting(s: WorldSetting) -> WorldSettingResponse:
-    return WorldSettingResponse(
-        id=s.id, novel_id=s.novel_id, name=s.name, category=s.category, description=s.description,
-        related_settings=s.related_settings or {}, chapter_references=s.chapter_references or {},
-        created_at=s.created_at, updated_at=s.updated_at,
-    )
+    return WorldSettingResponse.model_validate(s)
 
 
 def _thread(t: PlotThread) -> PlotThreadResponse:
-    return PlotThreadResponse(
-        id=t.id, novel_id=t.novel_id, title=t.title, description=t.description, status=t.status.value,
-        priority=t.priority.value, planted_chapter_id=t.planted_chapter_id, resolved_chapter_id=t.resolved_chapter_id,
-        related_characters=t.related_characters or [], related_locations=t.related_locations or [],
-        related_threads=t.related_threads or [], notes=t.notes, created_at=t.created_at, updated_at=t.updated_at,
-    )
+    return PlotThreadResponse.model_validate(t)
 
 
 def _ai_config(cfg: AIConfig) -> AIConfigResponse:
@@ -228,12 +199,47 @@ def _prune_auto_versions(database: Session, chapter_id: str) -> None:
         database.delete(stale)
 
 
+# ---------------------------------------------------------------- backup (#2)
+@router.post("/backup")
+def create_backup():
+    """On-demand snapshot via the online backup API. Safe under load."""
+    from .backup import backup_once
+    result = backup_once()
+    if not result:
+        raise HTTPException(status_code=409, detail="No database to back up yet")
+    return result
+
+
+@router.get("/backups")
+def list_backups_endpoint():
+    """Recent rolling backups (newest-first) for the settings page."""
+    from .backup import list_backups, should_daily_backup
+    return {"backups": list_backups(), "daily_due": should_daily_backup()}
+
+
+def _daily_backup_if_due():
+    """Best-effort first-write-of-day backup; never blocks the caller on failure."""
+    from .backup import backup_once, should_daily_backup
+    try:
+        if should_daily_backup():
+            backup_once()
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------- health / workspace
 @router.get("/health")
 def health():
     """Open endpoint (no token) used by the desktop shell to (a) wait for the
     backend to come up, (b) confirm the port owner is actually Mojing via the
-    pid/started_at fingerprint, and (c) fetch the bearer token to inject."""
+    pid/started_at fingerprint, and (c) fetch the bearer token to inject.
+
+    Security note (#7): the token is exposed here so the Electron shell can
+    bootstrap. On a single-user machine any local process that can curl this can
+    also read the SQLite file directly, so this is not a new attack surface
+    (documented in README). `handshake_open` reports whether we're still within
+    the startup window for clients that want to tighten this further."""
+    age = time.time() - _INSTANCE_STARTED_AT
     return {
         "status": "ok",
         "storage": "sqlite",
@@ -241,6 +247,7 @@ def health():
         "app": "mojing",
         "pid": _INSTANCE_PID,
         "started_at": _INSTANCE_STARTED_AT,
+        "handshake_open": age < 60,
         "auth_token": get_auth_token(),
     }
 
@@ -389,6 +396,8 @@ def update_chapter(chapter_id: str, payload: ChapterUpdate, database: Session = 
         _record_auto_version(database, chapter)
         chapter.content = next_content
         chapter.word_count = count_words(next_content)
+        # (#2) First content write of the day triggers a rolling file backup.
+        _daily_backup_if_due()
 
     if "title" in changes:
         chapter.title = changes["title"].strip()
@@ -1187,6 +1196,28 @@ def export_novel(novel_id: str, payload: ExportRequest, database: Session = Depe
         for c in chapters:
             body += f"## 第 {c.order} 章 · {c.title}\n\n{c.content}\n\n"
         return Response(content=body, media_type="text/markdown; charset=utf-8", headers=disposition(novel.title, "md"))
+
+    if fmt == "docx":
+        # (#5) Word export with heading hierarchy; pure-python via python-docx.
+        from io import BytesIO
+        from docx import Document
+        from docx.shared import Pt
+        doc = Document()
+        h = doc.add_heading(novel.title, level=0)
+        if novel.author:
+            doc.add_paragraph(novel.author)
+        if novel.description:
+            doc.add_paragraph(novel.description)
+        for c in chapters:
+            doc.add_heading(f"第 {c.order} 章 · {c.title}", level=1)
+            for para in (c.content or "").split("\n"):
+                stripped = para.strip()
+                if stripped:
+                    p = doc.add_paragraph(stripped)
+                    p.paragraph_format.space_after = Pt(6)
+        buf = BytesIO()
+        doc.save(buf)
+        return Response(content=buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers=disposition(novel.title, "docx"))
 
     # default txt
     body = f"{novel.title}\n{novel.author or ''}\n\n"

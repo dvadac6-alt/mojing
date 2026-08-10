@@ -1,7 +1,7 @@
 import { useEffect, useState, type ElementType } from 'react'
 import {
   Bot, BrainCircuit, Check, CircleHelp, Database, Download, Feather,
-  FileText, HardDrive, MapPin, PenLine, Plus, Settings, ShieldCheck, Trash2,
+  FileText, HardDrive, MapPin, PenLine, Plus, RefreshCw, Settings, ShieldCheck, Trash2,
 } from 'lucide-react'
 import {
   chooseDataDirectory, workspaceApi,
@@ -14,7 +14,11 @@ import { useAsyncAction } from '../hooks/useAsyncAction'
 export function SettingsPage({ workspace, reload }: { workspace: Workspace; reload: () => Promise<void> }) {
   const sections: [ElementType, string][] = [[Settings, '通用'], [PenLine, '编辑器'], [Bot, 'AI 模型'], [Download, '导出'], [HardDrive, '数据与备份'], [CircleHelp, '关于']]
   const [active, setActive] = useState('AI 模型')
-  return <div className="settings-page"><aside><div><label>应用偏好</label><strong>设置</strong></div><nav>{sections.map(([Icon, text], i) => { const I = Icon; return <button className={active === text ? 'active' : ''} key={text} onClick={() => setActive(text)}><I size={15} />{text}</button> })}</nav></aside>
+  return <div className="settings-page">
+    <aside>
+      <UpdateBanner />
+      <div><label>应用偏好</label><strong>设置</strong></div><nav>{sections.map(([Icon, text], i) => { const I = Icon; return <button className={active === text ? 'active' : ''} key={text} onClick={() => setActive(text)}><I size={15} />{text}</button> })}</nav>
+    </aside>
     <section>
       {active === 'AI 模型' && <AISection onSaved={reload} />}
       {active === '导出' && <ExportSection workspace={workspace} />}
@@ -110,19 +114,21 @@ function AIConfigForm({ initial, onClose, onSaved }: { initial?: AIConfig; onClo
 function ExportSection({ workspace }: { workspace: Workspace }) {
   const { novel } = workspace
   const [busy, setBusy] = useState('')
-  const download = async (format: 'txt' | 'markdown') => {
+  const download = async (format: 'txt' | 'markdown' | 'docx') => {
     setBusy(format)
     try {
       const blob = await workspaceApi.exportNovel(novel.id, format)
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
-      a.href = url; a.download = `${novel.title}.${format === 'markdown' ? 'md' : 'txt'}`; a.click()
+      const ext = format === 'markdown' ? 'md' : format
+      a.href = url; a.download = `${novel.title}.${ext}`; a.click()
       URL.revokeObjectURL(url)
     } catch { /* ignore */ } finally { setBusy('') }
   }
   return <Scroll><PageHeader eyebrow="导出" title="导出作品" desc={`将《${novel.title}》导出为本地文件，共 ${workspace.chapters.length} 章。`} />
     <div style={{ maxWidth: 720, margin: '0 auto', display: 'grid', gap: 12 }}>
-      <div className="config-card"><span className="cfg-icon"><FileText size={18} /></span><div className="cfg-body"><strong>纯文本 TXT</strong><small>适合投稿、备份与外部排版工具</small></div><Button kind="primary" onClick={() => download('txt')} disabled={!!busy}>{busy === 'txt' ? '导出中…' : '导出 TXT'}</Button></div>
+      <div className="config-card"><span className="cfg-icon"><FileText size={18} /></span><div className="cfg-body"><strong>Word 文档 DOCX</strong><small>带章节标题层级，适合投稿与排版（#5 新增）</small></div><Button kind="primary" onClick={() => download('docx')} disabled={!!busy}>{busy === 'docx' ? '导出中…' : '导出 DOCX'}</Button></div>
+      <div className="config-card"><span className="cfg-icon"><FileText size={18} /></span><div className="cfg-body"><strong>纯文本 TXT</strong><small>适合投稿、备份与外部排版工具</small></div><Button onClick={() => download('txt')} disabled={!!busy}>{busy === 'txt' ? '导出中…' : '导出 TXT'}</Button></div>
       <div className="config-card"><span className="cfg-icon"><FileText size={18} /></span><div className="cfg-body"><strong>Markdown</strong><small>章节带标题层级，适合发布与版本管理</small></div><Button onClick={() => download('markdown')} disabled={!!busy}>{busy === 'markdown' ? '导出中…' : '导出 Markdown'}</Button></div>
     </div>
   </Scroll>
@@ -133,18 +139,34 @@ function DataSection({ reload }: { reload: () => Promise<void> }) {
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [backups, setBackups] = useState<{ name: string; size_kb: number; modified: string }[]>([])
+  const [backupBusy, setBackupBusy] = useState(false)
+  const [backupMsg, setBackupMsg] = useState('')
   const hasNativePicker = !!window.mojingDesktop?.chooseDataDir
 
   const loadInfo = async () => { try { setInfo(await workspaceApi.getStorage()) } catch { /* ignore */ } }
-  useEffect(() => { void loadInfo() }, [])
+  const loadBackups = async () => { try { setBackups((await workspaceApi.listBackups()).backups) } catch { /* ignore */ } }
+  useEffect(() => { void loadInfo(); void loadBackups() }, [])
+
+  const doBackup = async () => {
+    setBackupBusy(true); setBackupMsg('')
+    try {
+      const r = await workspaceApi.createBackup()
+      setBackupMsg(`已创建备份 ${r.name}（${r.size_kb} KB）`)
+      await loadBackups()
+    } catch { setBackupMsg('备份失败，请稍后重试') } finally { setBackupBusy(false) }
+  }
 
   const apply = async (dir: string) => {
     setBusy(true); setError('')
     try {
-      await workspaceApi.setStoragePath(dir)
+      const res = await workspaceApi.setStoragePath(dir)
       await loadInfo()
       await reload()
       setEditing(false)
+      if ((res as { mounted_existing?: boolean }).mounted_existing) {
+        setError('注意：所选目录已存在数据库，已打开该数据（未覆盖当前作品）。如需覆盖请先手动删除目标目录的 mojing.db。')
+      }
     } catch (e) { setError(e instanceof Error ? e.message : '切换路径失败') } finally { setBusy(false) }
   }
   const reset = async () => {
@@ -177,6 +199,21 @@ function DataSection({ reload }: { reload: () => Promise<void> }) {
         <header><h2>默认路径</h2><p>未自定义时，数据保存在这里。</p></header>
         <section><div className="config-card"><span className="cfg-icon"><HardDrive size={18} /></span><div className="cfg-body"><strong>墨境数据（默认）</strong><small style={{ wordBreak: 'break-all' }}>{info?.default_dir ?? '—'}</small></div></div></section>
       </div>
+      <div className="setting-block">
+        <header><h2>自动备份</h2><p>每次启动与每天首次写作自动创建滚动备份（保留最近 10 份），防止文件损坏或误删丢失全部作品。</p></header>
+        <section>
+          <div className="database-card">
+            <span><ShieldCheck size={20} /></span>
+            <div>
+              <strong>{backups.length > 0 ? `已有 ${backups.length} 份备份` : '暂无备份记录'}</strong>
+              <p>最近备份：{backups[0]?.modified ?? '—'}{backups[0] ? ` · ${backups[0].size_kb} KB` : ''}</p>
+              <small>{backupMsg || '点击右侧按钮立即创建一份备份。'}</small>
+            </div>
+            <Button onClick={doBackup} disabled={backupBusy}>{backupBusy ? '备份中…' : '立即备份'}</Button>
+          </div>
+          {backups.length > 0 && <div className="backup-list">{backups.map(b => <div key={b.name}><span>{b.name}</span><small>{b.modified}</small><small>{b.size_kb} KB</small></div>)}</div>}
+        </section>
+      </div>
     </div>
     {editing && info && <PathForm defaultPath={info.data_dir} hasNativePicker={hasNativePicker} onClose={() => setEditing(false)} onApply={apply} busy={busy} />}
   </Scroll>
@@ -207,4 +244,20 @@ function AboutSection() {
       <div className="config-card"><span className="cfg-icon"><BrainCircuit size={18} /></span><div className="cfg-body"><strong>核心功能</strong><small>多作品管理 · 章节版本 · 角色 / 地点 / 世界观 / 伏笔 · AI 续写（多模型）</small></div></div>
     </div>
   </Scroll>
+}
+
+/** Auto-update banner (#10): shown when the desktop shell reports a downloaded
+ *  update. Dev/browser has no mojingDesktop bridge, so it renders nothing. */
+function UpdateBanner() {
+  const [status, setStatus] = useState<{ state: string; version: string } | null>(null)
+  useEffect(() => {
+    const unsub = window.mojingDesktop?.onUpdateStatus?.(setStatus)
+    return () => { unsub?.() }
+  }, [])
+  if (!status || status.state !== 'downloaded') return null
+  return <div className="update-banner">
+    <RefreshCw size={15} />
+    <span>新版本 <b>{status.version}</b> 已下载，重启后生效。</span>
+    <Button kind="primary" onClick={() => { void window.mojingDesktop?.installUpdate?.() }}><RefreshCw size={13} />重启更新</Button>
+  </div>
 }

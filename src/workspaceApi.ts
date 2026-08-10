@@ -184,6 +184,9 @@ declare global {
       getBackendUrl: () => string
       getAuthToken: () => string
       chooseDataDir?: (defaultPath?: string) => Promise<string | null>
+      // Auto-update (#10): status events from the main process; install = restart.
+      onUpdateStatus?: (cb: (status: { state: string; version: string }) => void) => (() => void) | undefined
+      installUpdate?: () => Promise<void>
     }
   }
 }
@@ -297,6 +300,10 @@ const api = {
     request<GraphEdge>(`/graph-edges/${id}`, { method: 'PUT', body: JSON.stringify({ label }) }),
   deleteGraphEdge: (id: string) => request<void>(`/graph-edges/${id}`, { method: 'DELETE' }),
 
+  // backups (#2): on-demand snapshot + recent backup list
+  createBackup: () => request<{ name: string; path: string; size_kb: number }>(`/backup`, { method: 'POST' }),
+  listBackups: () => request<{ backups: { name: string; size_kb: number; modified: string }[]; daily_due: boolean }>(`/backups`),
+
   // characters
   listCharacters: (novelId: string) => request<Character[]>(`/novels/${novelId}/characters`),
   createCharacter: (novelId: string, data: Partial<Character>) =>
@@ -397,7 +404,7 @@ const api = {
       total_calls: number
       by_model: { model: string; total_tokens: number; calls: number; prompt: number; completion: number }[]
     }>(`/novels/${novelId}/ai/usage?days=${days}`),
-  exportNovel: async (novelId: string, format: 'txt' | 'markdown', chapterIds?: string[]) => {
+  exportNovel: async (novelId: string, format: 'txt' | 'markdown' | 'docx', chapterIds?: string[]) => {
     const response = await fetch(`${API_BASE}/novels/${novelId}/export`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },

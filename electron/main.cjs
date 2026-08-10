@@ -2,6 +2,11 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const { spawn } = require('node:child_process')
 const http = require('node:http')
 const path = require('node:path')
+// Auto-update (#10): only meaningful in packaged builds; dev has no update channel.
+// window-state (#6): persists window size/position across launches.
+const isPackaged = app.isPackaged
+const { autoUpdater } = isPackaged ? require('electron-updater') : { autoUpdater: null }
+const windowStateKeeper = require('electron-window-state')
 
 const BASE_PORT = 8765
 const MAX_PORT_ATTEMPTS = 20
@@ -129,6 +134,51 @@ ipcMain.on('mojing:getAuthToken', event => {
   event.returnValue = backendToken
 })
 
+// ---- auto-update (#10) -----------------------------------------------------
+// Feed URL points at GitHub Releases assets (electron-builder's "latest" file).
+// autoUpdater is only wired in packaged builds; dev runs skip it entirely.
+let updateInfo = null  // { version, releaseNotes } once an update is found
+
+function setupAutoUpdater() {
+  if (!autoUpdater) return
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.on('update-available', info => {
+    updateInfo = { version: info.version, releaseNotes: info.releaseNotes }
+    console.log(`[Mojing Updater] update ${info.version} available, downloading…`)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('mojing:update-status', {
+        state: 'available', version: info.version,
+      })
+    }
+  })
+  autoUpdater.on('update-not-available', () => {
+    console.log('[Mojing Updater] up to date')
+  })
+  autoUpdater.on('update-downloaded', info => {
+    console.log(`[Mojing Updater] update ${info.version} downloaded; will install on quit`)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('mojing:update-status', {
+        state: 'downloaded', version: info.version,
+      })
+    }
+  })
+  autoUpdater.on('error', err => {
+    console.error('[Mojing Updater] error:', err?.message || err)
+  })
+  // Check on launch (quietly) and then every 4 hours.
+  autoUpdater.checkForUpdatesAndNotify().catch(() => {})
+  setInterval(() => { autoUpdater.checkForUpdatesAndNotify().catch(() => {}) }, 4 * 60 * 60 * 1000)
+}
+
+// Install the downloaded update immediately (called from the renderer "restart & update").
+ipcMain.handle('updater:install', () => {
+  if (autoUpdater) {
+    // setImmediate ensures the renderer gets the ack before the process exits.
+    setImmediate(() => autoUpdater.quitAndInstall())
+  }
+})
+
 // Native folder picker for the data directory. Defaults to the current path.
 ipcMain.handle('dialog:chooseDataDir', async (_event, defaultPath) => {
   const result = await dialog.showOpenDialog({
@@ -142,9 +192,17 @@ ipcMain.handle('dialog:chooseDataDir', async (_event, defaultPath) => {
 
 function createWindow() {
   const smokeTest = process.env.MOJING_SMOKE_TEST === '1'
+  // (#6) Persist window size/position; falls back to defaults on first launch.
+  const winState = windowStateKeeper({
+    defaultWidth: 1440,
+    defaultHeight: 900,
+    file: 'window-state.json',
+  })
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
+    x: winState.x,
+    y: winState.y,
+    width: winState.width,
+    height: winState.height,
     minWidth: 1100,
     minHeight: 720,
     frame: false,
@@ -158,6 +216,7 @@ function createWindow() {
       sandbox: true,
     },
   })
+  winState.manage(mainWindow)
 
   const developmentUrl = process.env.MOJING_DEV_SERVER_URL
   if (developmentUrl) mainWindow.loadURL(developmentUrl)
@@ -178,6 +237,7 @@ app.whenReady().then(async () => {
   try {
     await startBackend()
     createWindow()
+    setupAutoUpdater()  // (#10) only acts in packaged builds
   } catch (error) {
     console.error(error)
     app.quit()

@@ -24,3 +24,5 @@ Thumbs.db
 .mimosa/
 .zcode/
 gui-test-screenshots/
+# Local AI provider credentials (template lives at .env.example)
+.env

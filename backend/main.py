@@ -40,6 +40,13 @@ async def lifespan(_: FastAPI):
     init_db()
     with SessionLocal() as database:
         seed_demo_workspace(database)
+        # Import AI provider config from root .env (key encrypted at rest), so
+        # the user can keep API credentials in an env file instead of the UI.
+        from app.ai_env import import_env_config
+        try:
+            import_env_config(database)
+        except Exception:
+            pass  # a malformed .env must never block startup
     yield
 
 

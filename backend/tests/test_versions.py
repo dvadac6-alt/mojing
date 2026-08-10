@@ -2,10 +2,16 @@
 
 Covers: throttle-window overwrite (no stacking), cap enforcement on auto
 versions, and immortality of labeled (non-auto) versions.
+
+IMPORTANT: all database access must go through `db_mod.SessionLocal` at call
+time — a module-level `from app.database import SessionLocal` would capture the
+REAL database binding before the per-test monkeypatch applies and write into the
+user's actual data dir.
 """
 from datetime import datetime, timedelta
 
-from app.database import init_db, SessionLocal
+from app import database as db_mod
+from app.database import init_db
 from app.models import Chapter, ChapterVersion, Novel, NovelStatus
 from app.routes import _record_auto_version, MAX_AUTO_VERSIONS_PER_CHAPTER, AUTO_VERSION_THROTTLE_SECONDS
 
@@ -23,7 +29,7 @@ def _make_chapter(db):
 def test_throttle_window_overwrites(monkeypatch):
     """Two snapshots within the throttle window replace the same row, not stack."""
     init_db()
-    db = SessionLocal()
+    db = db_mod.SessionLocal()
     ch = _make_chapter(db)
     _record_auto_version(db, ch)  # snapshot 1
     db.commit()
@@ -37,7 +43,7 @@ def test_throttle_window_overwrites(monkeypatch):
 def test_bursts_outside_window_stack():
     """A snapshot older than the window starts a new row."""
     init_db()
-    db = SessionLocal()
+    db = db_mod.SessionLocal()
     ch = _make_chapter(db)
     _record_auto_version(db, ch)
     db.commit()
@@ -55,7 +61,7 @@ def test_bursts_outside_window_stack():
 def test_auto_versions_capped():
     """Beyond MAX_AUTO_VERSIONS_PER_CHAPTER, oldest auto versions are pruned."""
     init_db()
-    db = SessionLocal()
+    db = db_mod.SessionLocal()
     ch = _make_chapter(db)
     # Insert MAX+10 auto versions with old timestamps so none hit the throttle.
     base = datetime.utcnow() - timedelta(hours=2)
@@ -76,7 +82,7 @@ def test_auto_versions_capped():
 def test_labeled_versions_immortal():
     """A non-auto label (e.g. rollback) survives pruning even past the cap."""
     init_db()
-    db = SessionLocal()
+    db = db_mod.SessionLocal()
     ch = _make_chapter(db)
     base = datetime.utcnow() - timedelta(hours=2)
     for i in range(MAX_AUTO_VERSIONS_PER_CHAPTER + 5):

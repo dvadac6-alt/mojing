@@ -135,6 +135,8 @@ export type AIConfig = {  id: number
   key_hint: string
   temperature: number
   max_tokens: number
+  // Model context window (tokens) fetched from the provider's /models metadata.
+  context_length?: number | null
   is_active: boolean
   created_at: string
 }
@@ -365,6 +367,12 @@ const api = {
     request<{ ok: boolean; detail: string; model?: string }>(`/ai/configs/${id}/test`, {
       method: 'POST',
       body: JSON.stringify(data ?? {}),
+    }),
+  /** Fetch the provider's model list (with context windows) via the backend. */
+  listAIModels: (data: { base_url?: string; api_key?: string; config_id?: number }) =>
+    request<{ ok: boolean; detail: string; models?: { id: string; context_length: number | null }[] }>(`/ai/models`, {
+      method: 'POST',
+      body: JSON.stringify(data),
     }),
   aiModels: () =>
     request<{ active: AIConfig | null; configs: AIConfig[]; provider: string; offline_fallback: boolean }>('/ai/models'),

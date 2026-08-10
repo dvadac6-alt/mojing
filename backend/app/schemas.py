@@ -299,6 +299,7 @@ class AIConfigCreate(BaseModel):
     api_key: str = ""
     temperature: float = 0.85
     max_tokens: int = 1200
+    context_length: int | None = None
     is_active: bool = False
 
 
@@ -313,6 +314,7 @@ class AIConfigUpdate(BaseModel):
     api_key: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+    context_length: int | None = None
     is_active: bool | None = None
 
 
@@ -328,6 +330,8 @@ class AIConfigResponse(OrmModel):
     key_hint: str = ""
     temperature: float
     max_tokens: int
+    # Model context window (tokens) from the provider's /models metadata.
+    context_length: int | None = None
     is_active: bool
     created_at: datetime
 
@@ -360,6 +364,14 @@ class AIConfigTestRequest(BaseModel):
     model: str | None = None
     base_url: str | None = None
     api_key: str | None = None
+
+
+class AIModelsRequest(BaseModel):
+    """Fetch the provider's model list (with context windows). Works without a
+    saved config too (new-form flow); key is sent upstream, never returned."""
+    base_url: str = ""
+    api_key: str | None = None
+    config_id: int | None = None
 
 
 # ---------- Workspace / misc ----------

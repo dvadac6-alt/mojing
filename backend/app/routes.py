@@ -33,6 +33,7 @@ from .schemas import (
     AIConfigTestRequest,
     AIConfigUpdate,
     AIGenerateRequest,
+    AIModelsRequest,
     CharacterCreate,
     CharacterResponse,
     CharacterUpdate,
@@ -871,6 +872,70 @@ def test_ai_config(config_id: int, payload: AIConfigTestRequest, database: Sessi
     if resp.status_code >= 400:
         return {"ok": False, "detail": f"模型服务返回 {resp.status_code}：{resp.text[:200]}"}
     return {"ok": True, "detail": "连接成功", "model": model}
+
+
+def _parse_model_context(item: dict) -> int | None:
+    """Best-effort extraction of a model's context window from /models metadata.
+    Provider field names vary (OpenAI has none, OpenCode Zen/others add their
+    own); accept common spellings and "128k"-style strings."""
+    import re
+    for key in ("context_length", "context_window", "max_context_length", "max_context_window",
+                "input_token_limit", "max_model_len", "max_tokens"):
+        value = item.get(key)
+        if value is None:
+            continue
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+        if isinstance(value, str):
+            text = value.strip().lower().replace("tokens", "").strip()
+            match = re.match(r"^(\d+(?:\.\d+)?)\s*k$", text)
+            if match:
+                return int(float(match.group(1)) * 1000)
+            if text.isdigit():
+                return int(text)
+    return None
+
+
+@router.post("/ai/models")
+def list_ai_models(payload: AIModelsRequest, database: Session = Depends(get_db)):
+    """Proxy GET {base_url}/models and return the model list with context
+    windows, so the form can offer a picker instead of typing an id. Works for
+    both the new-form flow (base_url + api_key supplied) and editing an existing
+    config (config_id reuses the stored key). The key never reaches the browser."""
+    import httpx
+    from .security import decrypt_key
+    base_url = (payload.base_url or "").rstrip("/")
+    api_key = payload.api_key or ""
+    if payload.config_id:
+        cfg = database.get(AIConfig, payload.config_id)
+        if cfg:
+            base_url = base_url or cfg.base_url.rstrip("/")
+            api_key = api_key or decrypt_key(cfg.api_key)
+    if not base_url or not api_key:
+        return {"ok": False, "detail": "缺少 Base URL 或 API Key，无法获取模型列表。"}
+    try:
+        resp = httpx.get(
+            f"{base_url}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=httpx.Timeout(15.0, connect=8.0),
+        )
+    except httpx.HTTPError as exc:
+        return {"ok": False, "detail": f"连接失败：{exc}"}
+    if resp.status_code >= 400:
+        return {"ok": False, "detail": f"模型服务返回 {resp.status_code}：{resp.text[:200]}"}
+    data = resp.json()
+    items = data.get("data") or data.get("models") or []
+    models: list[dict] = []
+    for item in items:
+        if isinstance(item, str):
+            models.append({"id": item, "context_length": None})
+            continue
+        model_id = item.get("id") if isinstance(item, dict) else None
+        if not model_id:
+            continue
+        models.append({"id": model_id, "context_length": _parse_model_context(item)})
+    models.sort(key=lambda m: m["id"])
+    return {"ok": True, "detail": f"获取 {len(models)} 个模型", "models": models}
 
 
 def _prepare_generation(req: AIGenerateRequest) -> tuple[list[dict[str, str]], AIConfig | None, str]:

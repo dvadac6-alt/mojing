@@ -75,36 +75,81 @@ function AIConfigForm({ initial, onClose, onSaved }: { initial?: AIConfig; onClo
   const [isActive, setIsActive] = useState(initial?.is_active ?? false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState('')
+  // Model list fetched from the provider (with context windows) for the picker.
+  const [models, setModels] = useState<{ id: string; context_length: number | null }[] | null>(null)
+  const [manualModel, setManualModel] = useState(false)
+  const [contextLength, setContextLength] = useState<number | null>(initial?.context_length ?? null)
+  // Which preset template filled the form (purely a form convenience).
+  const [preset, setPreset] = useState('custom')
   const { busy, error, run } = useAsyncAction()
+
+  const applyPreset = (p: { key: string; label: string; provider: string; base_url: string; model: string }) => {
+    setPreset(p.key)
+    setName(p.label)
+    setProvider(p.provider)
+    setBaseUrl(p.base_url)
+    setModel(p.model)
+    setModels(null)
+    setManualModel(false)
+  }
   const submit = () => run(async () => {
     const data: Record<string, unknown> = { name: name.trim() || '默认模型', provider, model, base_url: baseUrl, temperature: Number(temperature) || 0.85, max_tokens: Number(maxTokens) || 1200, is_active: isActive }
+    // Model context comes from the provider's /models metadata; null = unknown.
+    data.context_length = contextLength
     // Only send the key when the user typed something — otherwise it's left
     // untouched on the server (api_key omitted => no change).
     if (apiKey !== '') data.api_key = apiKey
     if (initial) await workspaceApi.updateAIConfig(initial.id, data); else await workspaceApi.createAIConfig({ ...data, api_key: apiKey })
     onSaved()
   })
-  const test = async () => {
-    if (!initial) return
+  // Fetch the provider's model list so the user picks instead of typing an id.
+  const fetchModels = async () => {
     setTesting(true); setTestResult('')
     try {
-      const payload: { model?: string; base_url?: string; api_key?: string } = {}
-      if (model) payload.model = model
-      if (baseUrl) payload.base_url = baseUrl
-      if (apiKey !== '') payload.api_key = apiKey
-      const res = await workspaceApi.testAIConfig(initial.id, payload)
+      const res = await workspaceApi.listAIModels({ base_url: baseUrl, api_key: apiKey || undefined, config_id: initial?.id })
+      if (!res.ok) { setTestResult(res.detail); setModels(null); return }
+      setModels(res.models ?? [])
+      setManualModel(false)
+      const current = res.models?.find(m => m.id === model)
+      if (current) setContextLength(current.context_length)
       setTestResult(res.detail)
-    } catch (e) { setTestResult(e instanceof Error ? e.message : '测试失败') } finally { setTesting(false) }
+    } catch (e) { setTestResult(e instanceof Error ? e.message : '获取模型列表失败') } finally { setTesting(false) }
   }
+  const pickModel = (id: string) => {
+    setModel(id)
+    const m = models?.find(x => x.id === id)
+    setContextLength(m?.context_length ?? null)
+  }
+  const fmtContext = (n: number | null) => n ? (n >= 1000 ? `${(n / 1000).toFixed(n % 1000 ? 1 : 0)}K` : String(n)) : null
   const keyPlaceholder = initial?.has_key ? `已保存（${initial.key_hint}），留空保持不变` : 'sk-…'
   return <Modal eyebrow={initial ? '编辑模型' : '添加模型'} title={name || '新模型'} icon={Bot} onClose={onClose}
-    footer={<div className="form-actions">{error && <span className="form-error">{error}</span>}{initial && <Button onClick={test} disabled={testing || busy}>{testing ? '测试中…' : '测试连通'}</Button>}<Button onClick={onClose}>取消</Button><Button kind="primary" onClick={submit} disabled={busy}>{busy ? '保存中…' : '保存'}</Button></div>}>
+    footer={<div className="form-actions">{error && <span className="form-error">{error}</span>}<Button onClick={onClose}>取消</Button><Button kind="primary" onClick={submit} disabled={busy}>{busy ? '保存中…' : '保存'}</Button></div>}>
     <div className="form-body">
-      <div className="form-row"><Field label="显示名称"><input className={inputCls} value={name} onChange={e => setName(e.target.value)} autoFocus /></Field><Field label="Provider"><select className={selectCls} value={provider} onChange={e => setProvider(e.target.value)}><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="claude">Claude (兼容)</option></select></Field></div>
-      <Field label="模型 ID"><input className={inputCls} value={model} onChange={e => setModel(e.target.value)} placeholder="gpt-4o-mini / deepseek-chat / …" /></Field>
-      <Field label="Base URL（OpenAI 兼容）"><input className={inputCls} value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" /></Field>
+      <Field label="服务商预设（自动填写地址与模型，可再修改）">
+        <div className="segments">
+          <button className={preset === 'custom' ? 'active' : ''} onClick={() => setPreset('custom')}>自定义</button>
+          <button className={preset === 'opencode' ? 'active' : ''} onClick={() => applyPreset({ key: 'opencode', label: 'OpenCode Zen', provider: 'opencode', base_url: 'https://opencode.ai/zen/go/v1', model: 'opencode/deepseek-v4-flash' })}>OpenCode Zen</button>
+          <button className={preset === 'openai' ? 'active' : ''} onClick={() => applyPreset({ key: 'openai', label: 'OpenAI', provider: 'openai', base_url: 'https://api.openai.com/v1', model: 'gpt-4o-mini' })}>OpenAI</button>
+          <button className={preset === 'deepseek' ? 'active' : ''} onClick={() => applyPreset({ key: 'deepseek', label: 'DeepSeek', provider: 'deepseek', base_url: 'https://api.deepseek.com/v1', model: 'deepseek-chat' })}>DeepSeek</button>
+        </div>
+      </Field>
+      <div className="form-row"><Field label="显示名称"><input className={inputCls} value={name} onChange={e => setName(e.target.value)} autoFocus /></Field><Field label="Provider"><select className={selectCls} value={provider} onChange={e => setProvider(e.target.value)}><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="opencode">OpenCode Zen</option><option value="claude">Claude (兼容)</option></select></Field></div>
+      {models && !manualModel ? (
+        <Field label="模型 ID（来自平台列表）">
+          <div className="model-picker">
+            <select className={selectCls} value={model} onChange={e => pickModel(e.target.value)}>
+              {models.map(m => <option key={m.id} value={m.id}>{m.id}{fmtContext(m.context_length) ? ` · 上下文 ${fmtContext(m.context_length)}` : ''}</option>)}
+            </select>
+            <Button onClick={() => setManualModel(true)}>手动输入</Button>
+          </div>
+        </Field>
+      ) : (
+        <Field label="模型 ID"><input className={inputCls} value={model} onChange={e => setModel(e.target.value)} placeholder="opencode/gpt-5.5 · opencode/deepseek-v4-flash · gpt-4o-mini · deepseek-chat" /></Field>
+      )}
+      {contextLength ? <div className="model-context">该模型上下文窗口：<b>{fmtContext(contextLength)}</b> tokens（来自平台默认设置）</div> : null}
+      <Field label="Base URL（OpenAI 兼容）"><input className={inputCls} value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="https://opencode.ai/zen/go/v1" /></Field>
       <Field label="API Key"><input className={inputCls} type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={keyPlaceholder} /></Field>
-      {testResult && <div className="form-error" style={{ color: testResult.startsWith('连接成功') ? '#5a7d6a' : undefined }}>{testResult}</div>}
+      <div className="ai-fetch-row"><Button onClick={fetchModels} disabled={testing || busy}><Bot size={13} />{testing ? '获取中…' : '测试并获取模型列表'}</Button><span>{testResult || '连接平台后自动拉取可用模型与上下文窗口'}</span></div>
       <div className="form-row"><Field label="Temperature"><input className={inputCls} type="number" step="0.05" value={temperature} onChange={e => setTemperature(e.target.value)} /></Field><Field label="Max tokens"><input className={inputCls} type="number" value={maxTokens} onChange={e => setMaxTokens(e.target.value)} /></Field></div>
       <div className="setting-row" style={{ paddingLeft: 0, paddingRight: 0 }}><span><strong>设为当前使用模型</strong><small>同一时刻仅一个模型生效</small></span><button className={'toggle ' + (isActive ? 'on' : '')} onClick={() => setIsActive(v => !v)}><i /></button></div>
     </div>

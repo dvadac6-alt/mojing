@@ -241,6 +241,8 @@ class AIConfig(Base):
     api_key: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     temperature: Mapped[float] = mapped_column(Float, default=0.85, nullable=False)
     max_tokens: Mapped[int] = mapped_column(Integer, default=1200, nullable=False)
+    # Model context window (tokens) fetched from the provider's /models metadata.
+    context_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

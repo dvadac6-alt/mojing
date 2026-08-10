@@ -220,6 +220,7 @@ def _migrate_legacy_columns() -> None:
     """In-place column additions for tables created before a schema change."""
     additions = {
         "chapter_versions": [("label", "VARCHAR(40) DEFAULT 'auto' NOT NULL")],
+        "ai_config": [("context_length", "INTEGER")],
     }
     with engine.connect() as conn:
         for table, columns in additions.items():

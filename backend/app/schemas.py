@@ -350,6 +350,8 @@ class AIGenerateRequest(BaseModel):
     instruction: str = ""
     mode: str = "continue"
     target_words: int = 800
+    # Pick a specific AI config (model) for this call; omit to use the active one.
+    config_id: int | None = None
     context: AIContextOptions = Field(default_factory=AIContextOptions)
 
 

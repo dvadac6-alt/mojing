@@ -176,6 +176,8 @@ export type AIGenerateRequest = {
   instruction?: string
   mode?: 'continue' | 'polish' | 'expand' | 'worldsetting' | 'setting_expand'
   target_words?: number
+  // Pick a specific AI config (model); omit to use the active one.
+  config_id?: number | null
   context?: Partial<AIContextOptions>
 }
 

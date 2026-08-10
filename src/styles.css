@@ -647,6 +647,9 @@ kbd { font-family: inherit; font-size: 10px; line-height: 1; border: 1px solid c
 .model-context b { color: #4d544f; }
 .ai-fetch-row { display: flex; align-items: center; gap: 10px; }
 .ai-fetch-row > span { color: #9a9d98; font-size: 9px; }
+.model-select-row { display: flex; align-items: center; gap: 7px; }
+.model-select-row > svg { color: #a0a39f; flex-shrink: 0; }
+.model-select-row select { flex: 1; }
 .world-grid article { min-height: 190px; padding: 17px; position: relative; border: 1px solid #dfdcd3; border-radius: 9px; background: #fffefa; transition: transform .15s, box-shadow .15s; }
 .world-grid article:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
 .world-grid article > span { width: 35px; height: 35px; display: grid; place-items: center; border-radius: 8px; }

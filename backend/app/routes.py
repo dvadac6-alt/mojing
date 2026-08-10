@@ -954,7 +954,12 @@ def _prepare_generation(req: AIGenerateRequest) -> tuple[list[dict[str, str]], A
             database, novel, instruction=req.instruction, mode=req.mode,
             target_words=req.target_words, context=req.context, current_content=current_content,
         )
-        config = _active_config(database)
+        # Per-call model override (the UI lets the user switch models on the fly);
+        # falls back to the active config when no config_id is given.
+        if req.config_id:
+            config = database.get(AIConfig, req.config_id)
+        else:
+            config = _active_config(database)
         from .security import decrypt_key
         has_key = bool(decrypt_key(config.api_key)) if config else False
         model_name = config.model if config and has_key and config.base_url else "mock (offline)"

@@ -11,6 +11,7 @@ import {
 import type { Page } from '../lib/constants'
 import { fmt } from '../lib/constants'
 import { Button, EmptyState, Field, Modal, SearchBox } from '../components/ui'
+import { ModelSelect } from '../components/ModelSelect'
 import { useAsyncAction } from '../hooks/useAsyncAction'
 
 const SIG_SEP = '\u0000'
@@ -289,6 +290,7 @@ function QuickAI({ workspace, chapter, onAccept }: { workspace: Workspace; chapt
   const [instruction, setInstruction] = useState('让马车里的人交代城北线索，但不要揭示他的真实身份。气氛保持克制、紧张。')
   const [mode, setMode] = useState<'continue' | 'polish' | 'expand'>('continue')
   const [target, setTarget] = useState('800')
+  const [modelId, setModelId] = useState<number | null>(null)
   const [ctx, setCtx] = useState({ characters: true, locations: false, settings: true, threads: true, recent_chapters: 2 })
   const [output, setOutput] = useState('')
   const [model, setModel] = useState('')
@@ -303,7 +305,7 @@ function QuickAI({ workspace, chapter, onAccept }: { workspace: Workspace; chapt
     try {
       const gen = streamAI('/ai/generate', {
         novel_id: workspace.novel.id, chapter_id: chapter.id, instruction, mode,
-        target_words: Number(target) || 800, context: ctx,
+        target_words: Number(target) || 800, config_id: modelId, context: ctx,
       }, controller.signal)
       for await (const piece of gen) { setOutput(o => o + piece.text); setModel(piece.model) }
     } catch (e) {
@@ -321,6 +323,7 @@ function QuickAI({ workspace, chapter, onAccept }: { workspace: Workspace; chapt
     <div className="assist-intro"><span><WandSparkles size={18} /></span><div><strong>接下来想怎么写？</strong><p>结合当前章节和作品资料生成草稿。</p></div></div>
     <label>写作要求</label>
     <div className="prompt"><textarea value={instruction} onChange={e => setInstruction(e.target.value)} /><footer><span>{instruction.length} / 500</span></footer></div>
+    <ModelSelect value={modelId} onChange={setModelId} />
     <div className="two-fields">
       <Field label="生成方式"><select className={selectCls} value={mode} onChange={e => setMode(e.target.value as typeof mode)}><option value="continue">续写正文</option><option value="polish">润色正文</option><option value="expand">扩写场景</option></select></Field>
       <Field label="目标长度"><select className={selectCls} value={target} onChange={e => setTarget(e.target.value)}><option value="400">约 400 字</option><option value="800">约 800 字</option><option value="1200">约 1200 字</option></select></Field>
@@ -342,6 +345,7 @@ function QuickAI({ workspace, chapter, onAccept }: { workspace: Workspace; chapt
 
 function AgentPanel({ workspace, onAccept }: { workspace: Workspace; onAccept: (t: string) => void }) {
   const [goal, setGoal] = useState('完成本章后半段，推进玉佩伏笔，但不要揭晓幕后人物。')
+  const [modelId, setModelId] = useState<number | null>(null)
   const [output, setOutput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
@@ -350,7 +354,7 @@ function AgentPanel({ workspace, onAccept }: { workspace: Workspace; onAccept: (
     const controller = new AbortController()
     abortRef.current = controller
     try {
-      for await (const p of streamAI('/ai/generate', { novel_id: workspace.novel.id, instruction: goal, mode: 'continue', target_words: 800 }, controller.signal)) setOutput(o => o + p.text)
+      for await (const p of streamAI('/ai/generate', { novel_id: workspace.novel.id, instruction: goal, mode: 'continue', target_words: 800, config_id: modelId }, controller.signal)) setOutput(o => o + p.text)
     } catch (e) {
       if (!(e instanceof DOMException && e.name === 'AbortError')) setOutput(e instanceof Error ? e.message : '生成失败')
     } finally { setStreaming(false); abortRef.current = null }
@@ -362,6 +366,7 @@ function AgentPanel({ workspace, onAccept }: { workspace: Workspace; onAccept: (
     <p>给出目标，Agent 会收集资料、生成草稿并自检。</p>
     <label>任务目标</label>
     <textarea className="agent-goal" value={goal} onChange={e => setGoal(e.target.value)} />
+    <ModelSelect value={modelId} onChange={setModelId} />
     <div className="plan-preview">{['收集作品上下文', '生成章节草稿', '目标符合度自检'].map((x, i) => <div key={x}><b>{i + 1}</b><span><strong>{x}</strong><small>{i === 0 ? '近期章节、人物、伏笔' : i === 1 ? '等待作者审阅' : '检查连续性问题'}</small></span></div>)}</div>
     <div className="ai-generate-row">
       <button className="generate" onClick={run} disabled={streaming}><Bot size={15} />{streaming ? '运行中…' : '运行写作 Agent'}</button>

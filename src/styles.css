@@ -608,6 +608,12 @@ kbd { font-family: inherit; font-size: 10px; line-height: 1; border: 1px solid c
 .tree button { width: 100%; min-height: 40px; padding: 4px 8px; display: flex; align-items: center; gap: 6px; border-radius: 5px; background: transparent; text-align: left; color: #6d7470; }
 .tree button:hover, .tree button.active { background: white; }
 .tree button.active { box-shadow: inset 2px 0 var(--accent); }
+.tree .tree-row { display: flex; align-items: stretch; }
+.tree .tree-row > .tree-arrow { width: 22px; flex: 0 0 22px; min-height: 40px; padding: 0; justify-content: center; border-radius: 5px 0 0 5px; color: #a0a39f; }
+.tree .tree-row > .tree-arrow:hover { background: rgba(255,255,255,.7); color: #6b6f6b; }
+.tree .tree-row > .tree-arrow svg { transition: transform .15s ease; }
+.tree .tree-row > .tree-arrow.collapsed svg { transform: rotate(-90deg); }
+.tree .tree-row > button:last-child { flex: 1; min-width: 0; border-radius: 0 5px 5px 0; }
 .tree button span { display: flex; flex-direction: column; gap: 2px; }
 .tree button strong { font-size: 9px; }
 .tree button small { color: #9b9e99; font-size: 7px; }

@@ -10,11 +10,38 @@ export function LocationsPage({ workspace, reload }: { workspace: Workspace; rel
   const [selectedId, setSelectedId] = useState(locs[0]?.id ?? '')
   const [editing, setEditing] = useState<Loc | null>(null)
   const [creating, setCreating] = useState(false)
+  // Nodes the user has collapsed. Empty set = everything expanded (the default),
+  // so the tree looks exactly like before until an arrow is clicked.
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   useEffect(() => { if (!locs.find(l => l.id === selectedId)) setSelectedId(locs[0]?.id ?? '') }, [locs])
   const current = locs.find(l => l.id === selectedId) ?? locs[0]
   const childrenOf = (id: string | null) => locs.filter(l => l.parent_location_id === id)
 
-  const Tree = ({ nodes, depth }: { nodes: Loc[]; depth: number }) => <>{nodes.map(node => <div key={node.id}><button className={node.id === selectedId ? 'active' : ''} style={{ paddingLeft: 10 + depth * 16 }} onClick={() => setSelectedId(node.id)}><ChevronDown size={12} /><MapPin size={13} /><span><strong>{node.name}</strong><small>{node.type}</small></span></button>{childrenOf(node.id).length > 0 && <section><Tree nodes={childrenOf(node.id)} depth={depth + 1} /></section>}</div>)}</>
+  const toggleCollapse = (id: string) => setCollapsed(prev => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+
+  const Tree = ({ nodes, depth }: { nodes: Loc[]; depth: number }) => <>{nodes.map(node => {
+    const hasKids = childrenOf(node.id).length > 0
+    const isCollapsed = collapsed.has(node.id)
+    return <div key={node.id}>
+      <div className="tree-row" style={{ paddingLeft: 8 + depth * 16 }}>
+        {/* Arrow toggles expand/collapse; the row itself selects the location. */}
+        <button className={'tree-arrow' + (isCollapsed ? ' collapsed' : '')}
+          style={{ visibility: hasKids ? 'visible' : 'hidden' }}
+          aria-label={isCollapsed ? '展开' : '收缩'}
+          onClick={e => { e.stopPropagation(); toggleCollapse(node.id) }}>
+          <ChevronDown size={12} />
+        </button>
+        <button className={node.id === selectedId ? 'active' : ''} onClick={() => setSelectedId(node.id)}>
+          <MapPin size={13} /><span><strong>{node.name}</strong><small>{node.type}</small></span>
+        </button>
+      </div>
+      {hasKids && !isCollapsed && <section><Tree nodes={childrenOf(node.id)} depth={depth + 1} /></section>}
+    </div>
+  })}</>
 
   if (locs.length === 0) return <EmptyStateWrap icon={MapPin} title="还没有地点" desc="建立地点层级，让故事的空间更有层次。" action={() => setCreating(true)} />
 

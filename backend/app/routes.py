@@ -960,6 +960,15 @@ def ai_worldsetting(req: AIGenerateRequest):
     return _stream_response(req)
 
 
+@router.post("/ai/setting-expand")
+def ai_setting_expand(req: AIGenerateRequest):
+    """Expand an existing setting's description (used from the edit dialog)."""
+    req.mode = "setting_expand"
+    req.target_words = 300
+    req.context.settings = True
+    return _stream_response(req)
+
+
 @router.post("/ai/suggest-threads")
 def ai_suggest_threads(req: AIConsistencyRequest, database: Session = Depends(get_db)):
     _get_novel(database, req.novel_id)

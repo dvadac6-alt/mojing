@@ -172,7 +172,7 @@ export type AIGenerateRequest = {
   novel_id: string
   chapter_id?: string | null
   instruction?: string
-  mode?: 'continue' | 'polish' | 'expand' | 'worldsetting'
+  mode?: 'continue' | 'polish' | 'expand' | 'worldsetting' | 'setting_expand'
   target_words?: number
   context?: Partial<AIContextOptions>
 }

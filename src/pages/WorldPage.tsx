@@ -102,17 +102,45 @@ function SettingForm({ novelId, initial, onClose, onSaved, onDelete }: { novelId
   const [name, setName] = useState(initial?.name ?? '')
   const [category, setCategory] = useState(initial?.category ?? '世界规则')
   const [description, setDescription] = useState(initial?.description ?? '')
-  const { busy, error, run } = useAsyncAction()
+  const [expanding, setExpanding] = useState(false)
+  const expandAbort = useRef<AbortController | null>(null)
+  const { busy, error, run, setError } = useAsyncAction()
   const submit = () => run(async () => {
     const data = { name: name.trim() || '未命名设定', category, description }
     if (initial) await workspaceApi.updateSetting(initial.id, data); else await workspaceApi.createSetting(novelId, data)
     onSaved()
   })
-  return <Modal eyebrow={initial ? '编辑设定' : '新建设定'} title={name || '新设定'} icon={Globe2} onClose={onClose}
-    footer={<div className="form-actions">{initial && onDelete && <><Button kind="danger" onClick={() => { if (confirm('删除此设定？')) void onDelete() }}><Trash2 size={13} />删除</Button><b /></>}{error && <span className="form-error">{error}</span>}<Button onClick={onClose}>取消</Button><Button kind="primary" onClick={submit} disabled={busy}>{busy ? '保存中…' : '保存'}</Button></div>}>
+
+  // AI 扩写：基于当前名称/分类/说明生成更完整的详细说明，流式填入。
+  const expand = async () => {
+    if (expanding) return
+    setExpanding(true)
+    const controller = new AbortController()
+    expandAbort.current = controller
+    try {
+      const instruction = `设定名称：${name.trim() || '未命名'}\n分类：${category}\n现有说明：${description.trim() || '（暂无说明）'}`
+      setDescription('')
+      for await (const chunk of streamAI('/ai/setting-expand', {
+        novel_id: novelId, instruction, mode: 'setting_expand', target_words: 300,
+        context: { characters: false, locations: false, settings: true, threads: false, recent_chapters: 0 },
+      }, controller.signal)) {
+        setDescription(prev => prev + chunk.text)
+      }
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') setError(e instanceof Error ? e.message : 'AI 扩写失败')
+    } finally {
+      setExpanding(false); expandAbort.current = null
+    }
+  }
+
+  return <Modal eyebrow={initial ? '编辑设定' : '新建设定'} title={name || '新设定'} icon={Globe2} onClose={() => { expandAbort.current?.abort(); onClose() }}
+    footer={<div className="form-actions">{initial && onDelete && <><Button kind="danger" onClick={() => { if (confirm('删除此设定？')) void onDelete() }}><Trash2 size={13} />删除</Button><b /></>}{error && <span className="form-error">{error}</span>}<Button onClick={onClose}>取消</Button><Button kind="primary" onClick={submit} disabled={busy || expanding}>{busy ? '保存中…' : '保存'}</Button></div>}>
     <div className="form-body">
       <div className="form-row"><Field label="名称"><input className={inputCls} value={name} onChange={e => setName(e.target.value)} autoFocus /></Field><Field label="分类"><select className={selectCls} value={category} onChange={e => setCategory(e.target.value)}>{['世界规则', '势力分布', '历史背景', '法宝物品'].map(c => <option key={c}>{c}</option>)}</select></Field></div>
-      <Field label="详细说明"><textarea className={areaCls} value={description} onChange={e => setDescription(e.target.value)} /></Field>
+      <label className="form-field">
+        <span>详细说明<button type="button" className="ai-mini-btn" onClick={expand} disabled={expanding}><Sparkles size={11} />{expanding ? '扩写中…' : 'AI 扩写'}</button></span>
+        <textarea className={areaCls} rows={7} value={description} onChange={e => setDescription(e.target.value)} placeholder="简要描述该设定的来历与特征，或点击 AI 扩写自动生成。" />
+      </label>
     </div>
   </Modal>
 }

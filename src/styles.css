@@ -638,6 +638,9 @@ kbd { font-family: inherit; font-size: 10px; line-height: 1; border: 1px solid c
 .world-grid { max-width: 1500px; margin: 0 auto; display: grid; grid-template-columns: repeat(3,1fr); gap: 13px; }
 .ai-draft-preview { display: flex; gap: 18px; padding: 9px 12px; border: 1px solid #e3dccb; border-radius: 7px; background: #fbf7ee; color: #8a8d88; font-size: 10px; }
 .ai-draft-preview b { color: #4d544f; font-weight: 600; }
+.form-field > span .ai-mini-btn { float: right; display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 10px; background: #f3e9de; color: #9a6853; font-size: 9px; }
+.form-field > span .ai-mini-btn:hover:not(:disabled) { background: #ecdcc9; }
+.form-field > span .ai-mini-btn:disabled { opacity: .6; cursor: default; }
 .world-grid article { min-height: 190px; padding: 17px; position: relative; border: 1px solid #dfdcd3; border-radius: 9px; background: #fffefa; transition: transform .15s, box-shadow .15s; }
 .world-grid article:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
 .world-grid article > span { width: 35px; height: 35px; display: grid; place-items: center; border-radius: 8px; }

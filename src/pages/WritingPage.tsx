@@ -294,26 +294,37 @@ function QuickAI({ workspace, chapter, onAccept }: { workspace: Workspace; chapt
   const [ctx, setCtx] = useState({ characters: true, locations: false, settings: true, threads: true, recent_chapters: 2 })
   const [output, setOutput] = useState('')
   const [model, setModel] = useState('')
-  const [streaming, setStreaming] = useState(false)
+  // 'connecting' = waiting for the first token (cold start can take ~10-20s on
+  // real providers); 'streaming' = tokens are flowing.
+  const [phase, setPhase] = useState<'idle' | 'connecting' | 'streaming'>('idle')
   const [error, setError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
 
   const generate = async () => {
-    setOutput(''); setError(''); setStreaming(true)
+    setOutput(''); setError(''); setPhase('connecting')
     const controller = new AbortController()
     abortRef.current = controller
+    let received = ''
+    let failed = false
     try {
       const gen = streamAI('/ai/generate', {
         novel_id: workspace.novel.id, chapter_id: chapter.id, instruction, mode,
         target_words: Number(target) || 800, config_id: modelId, context: ctx,
       }, controller.signal)
-      for await (const piece of gen) { setOutput(o => o + piece.text); setModel(piece.model) }
+      for await (const piece of gen) { received += piece.text; setOutput(received); setModel(piece.model); setPhase('streaming') }
     } catch (e) {
       // An abort is the user choosing to stop, not a failure to surface.
       if (!(e instanceof DOMException && e.name === 'AbortError')) {
+        failed = true
         setError(e instanceof Error ? e.message : '生成失败')
       }
-    } finally { setStreaming(false); abortRef.current = null }
+    } finally {
+      setPhase('idle'); abortRef.current = null
+      // Stream ended with zero content and no error: surface it explicitly
+      // instead of leaving the user staring at an empty panel (slow providers
+      // can time out upstream and close the connection).
+      if (!received.trim() && !failed) setError('模型未返回内容（连接可能中断），请重试。')
+    }
   }
   const stop = () => { abortRef.current?.abort() }
   const accept = () => { if (output.trim()) { onAccept(output.trim()); setOutput('') } }
@@ -332,13 +343,14 @@ function QuickAI({ workspace, chapter, onAccept }: { workspace: Workspace; chapt
       <div>{(['characters', 'locations', 'settings', 'threads'] as const).map(k => <button key={k} className={ctx[k] ? 'active' : ''} onClick={() => setCtx(c => ({ ...c, [k]: !c[k] }))}>{({ characters: '角色', locations: '地点', settings: '世界观', threads: '伏笔' })[k]}</button>)}</div>
     </div>
     <div className="ai-generate-row">
-      <button className="generate" onClick={generate} disabled={streaming}><Sparkles size={15} />{streaming ? '正在生成…' : '生成可审阅草稿'}<kbd>⌘ ↵</kbd></button>
-      {streaming && <button className="generate stop" onClick={stop}><Square size={14} />停止</button>}
+      <button className="generate" onClick={generate} disabled={phase !== 'idle'}><Sparkles size={15} />{phase === 'connecting' ? '正在连接模型…' : phase === 'streaming' ? '正在生成…' : '生成可审阅草稿'}<kbd>⌘ ↵</kbd></button>
+      {phase !== 'idle' && <button className="generate stop" onClick={stop}><Square size={14} />停止</button>}
     </div>
-    {(output || error) && <div className="ai-meta"><Sparkles size={12} />模型 <b>{model || 'mock'}</b>{streaming && <span>· 生成中</span>}</div>}
+    {phase === 'connecting' && <div className="ai-connecting">模型正在推理，首次输出可能需要 20~40 秒（取决于模型与字数），请耐心等待…</div>}
+    {(output || error) && <div className="ai-meta"><Sparkles size={12} />模型 <b>{model || 'mock'}</b>{phase !== 'idle' && <span>· 生成中</span>}</div>}
     {error && <div className="form-error">{error}</div>}
-    {output && <div className={'ai-output' + (streaming ? ' streaming' : '')}>{output}</div>}
-    {output && !streaming && <div className="ai-actions"><Button onClick={() => setOutput('')}>丢弃</Button><Button kind="primary" onClick={accept}><Check size={14} />采纳并插入</Button></div>}
+    {output && <div className={'ai-output' + (phase === 'streaming' ? ' streaming' : '')}>{output}</div>}
+    {output && phase === 'idle' && <div className="ai-actions"><Button onClick={() => setOutput('')}>丢弃</Button><Button kind="primary" onClick={accept}><Check size={14} />采纳并插入</Button></div>}
     <small className="safe-note"><ShieldCheck size={13} />不会自动写入正文，确认后才会应用。</small>
   </div>
 }
@@ -347,17 +359,22 @@ function AgentPanel({ workspace, onAccept }: { workspace: Workspace; onAccept: (
   const [goal, setGoal] = useState('完成本章后半段，推进玉佩伏笔，但不要揭晓幕后人物。')
   const [modelId, setModelId] = useState<number | null>(null)
   const [output, setOutput] = useState('')
-  const [streaming, setStreaming] = useState(false)
+  const [phase, setPhase] = useState<'idle' | 'connecting' | 'streaming'>('idle')
   const abortRef = useRef<AbortController | null>(null)
   const run = async () => {
-    setOutput(''); setStreaming(true)
+    setOutput(''); setPhase('connecting')
     const controller = new AbortController()
     abortRef.current = controller
+    let received = ''
+    let failed = false
     try {
-      for await (const p of streamAI('/ai/generate', { novel_id: workspace.novel.id, instruction: goal, mode: 'continue', target_words: 800, config_id: modelId }, controller.signal)) setOutput(o => o + p.text)
+      for await (const p of streamAI('/ai/generate', { novel_id: workspace.novel.id, instruction: goal, mode: 'continue', target_words: 800, config_id: modelId }, controller.signal)) { received += p.text; setOutput(received); setPhase('streaming') }
     } catch (e) {
-      if (!(e instanceof DOMException && e.name === 'AbortError')) setOutput(e instanceof Error ? e.message : '生成失败')
-    } finally { setStreaming(false); abortRef.current = null }
+      if (!(e instanceof DOMException && e.name === 'AbortError')) { failed = true; setOutput(e instanceof Error ? e.message : '生成失败') }
+    } finally {
+      setPhase('idle'); abortRef.current = null
+      if (!received.trim() && !failed) setOutput('模型未返回内容（连接可能中断），请重试。')
+    }
   }
   const stop = () => { abortRef.current?.abort() }
   return <div className="assist-body agent-body">
@@ -369,10 +386,11 @@ function AgentPanel({ workspace, onAccept }: { workspace: Workspace; onAccept: (
     <ModelSelect value={modelId} onChange={setModelId} />
     <div className="plan-preview">{['收集作品上下文', '生成章节草稿', '目标符合度自检'].map((x, i) => <div key={x}><b>{i + 1}</b><span><strong>{x}</strong><small>{i === 0 ? '近期章节、人物、伏笔' : i === 1 ? '等待作者审阅' : '检查连续性问题'}</small></span></div>)}</div>
     <div className="ai-generate-row">
-      <button className="generate" onClick={run} disabled={streaming}><Bot size={15} />{streaming ? '运行中…' : '运行写作 Agent'}</button>
-      {streaming && <button className="generate stop" onClick={stop}><Square size={14} />停止</button>}
+      <button className="generate" onClick={run} disabled={phase !== 'idle'}><Bot size={15} />{phase === 'connecting' ? '正在连接模型…' : phase === 'streaming' ? '运行中…' : '运行写作 Agent'}</button>
+      {phase !== 'idle' && <button className="generate stop" onClick={stop}><Square size={14} />停止</button>}
     </div>
-    {output && <><div className={'ai-output' + (streaming ? ' streaming' : '')}>{output}</div>{!streaming && <div className="ai-actions"><Button onClick={() => setOutput('')}>丢弃</Button><Button kind="primary" onClick={() => { onAccept(output.trim()); setOutput('') }}><Check size={14} />采纳</Button></div>}</>}
+    {phase === 'connecting' && <div className="ai-connecting">模型正在推理，首次输出可能需要 20~40 秒（取决于模型与字数），请耐心等待…</div>}
+    {output && <><div className={'ai-output' + (phase === 'streaming' ? ' streaming' : '')}>{output}</div>{phase === 'idle' && <div className="ai-actions"><Button onClick={() => setOutput('')}>丢弃</Button><Button kind="primary" onClick={() => { onAccept(output.trim()); setOutput('') }}><Check size={14} />采纳</Button></div>}</>}
   </div>
 }
 

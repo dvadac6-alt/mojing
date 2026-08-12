@@ -13,6 +13,7 @@ import { fmt } from '../lib/constants'
 import { Button, EmptyState, Field, Modal, SearchBox } from '../components/ui'
 import { ModelSelect } from '../components/ModelSelect'
 import { useAsyncAction } from '../hooks/useAsyncAction'
+import { useConnectingTimer } from '../hooks/useConnectingTimer'
 
 const SIG_SEP = '\u0000'
 
@@ -115,6 +116,8 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; insertPos: number; selStart: number; selEnd: number } | null>(null)
   const [highlights, setHighlights] = useState<Highlight[]>([])
   const [aiPhase, setAiPhase] = useState<'idle' | 'connecting' | 'streaming'>('idle')
+  const [aiError, setAiError] = useState('')
+  const aiElapsed = useConnectingTimer(aiPhase)
   const aiAbort = useRef<AbortController | null>(null)
 
   const onContextMenu = (e: React.MouseEvent<HTMLTextAreaElement>) => {
@@ -134,6 +137,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
         ? `请从以下内容的结尾处自然续写，保持文风与语气一致，约 300 字。只输出续写正文，不要解释。\n\n--- 前文 ---\n${contextBefore}`
         : '请从章节开头自然开始续写，约 300 字。只输出正文。')
     setAiPhase('connecting')
+    setAiError('')
     setHighlights([])
     const controller = new AbortController()
     aiAbort.current = controller
@@ -161,7 +165,12 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
       }
       setAiPhase('idle')
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') setHighlights([])
+      if ((e as Error).name !== 'AbortError') {
+        setHighlights([])
+        // streamAI now surfaces the real upstream reason (429 / 401 / timeout);
+        // show it instead of failing silently so the user knows *why*.
+        setAiError((e as Error).message || 'AI 生成失败')
+      }
       setAiPhase('idle')
     } finally { aiAbort.current = null }
   }
@@ -384,12 +393,16 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
            </button>
          </div>
        )}
-       {aiPhase !== 'idle' && (
-         <div className="ai-inline-status">
-           <Sparkles size={13} />{aiPhase === 'connecting' ? '正在连接模型…' : 'AI 生成中（绿色为新增）'}
-           <button onClick={() => aiAbort.current?.abort()}><Square size={11} />停止</button>
-         </div>
-       )}
+      {(aiPhase !== 'idle' || aiError) && (
+        <div className={'ai-inline-status' + (aiError ? ' error' : '')}>
+          <Sparkles size={13} />
+          {aiError
+            ? <>AI 生成失败：{aiError}<button onClick={() => setAiError('')}>×</button></>
+            : aiPhase === 'connecting'
+              ? <>正在连接模型… 已等待 {aiElapsed} 秒<button onClick={() => aiAbort.current?.abort()}><Square size={11} />停止</button></>
+              : <>AI 生成中（绿色为新增）<button onClick={() => aiAbort.current?.abort()}><Square size={11} />停止</button></>}
+        </div>
+      )}
        <nav className="page-navigation" aria-label="章节分页">
          <button onClick={() => setPageIndex(index => Math.max(0, index - 1))} disabled={currentPageIndex === 0}><ChevronLeft size={14} />上一页</button>
          <span>第 <b>{currentPageIndex + 1}</b> / {pages.length} 页</span>
@@ -414,6 +427,7 @@ function QuickAI({ workspace, chapter, onAccept }: { workspace: Workspace; chapt
   // real providers); 'streaming' = tokens are flowing.
   const [phase, setPhase] = useState<'idle' | 'connecting' | 'streaming'>('idle')
   const [error, setError] = useState('')
+  const elapsed = useConnectingTimer(phase)
   const abortRef = useRef<AbortController | null>(null)
 
   const generate = async () => {
@@ -462,7 +476,7 @@ function QuickAI({ workspace, chapter, onAccept }: { workspace: Workspace; chapt
       <button className="generate" onClick={generate} disabled={phase !== 'idle'}><Sparkles size={15} />{phase === 'connecting' ? '正在连接模型…' : phase === 'streaming' ? '正在生成…' : '生成可审阅草稿'}<kbd>⌘ ↵</kbd></button>
       {phase !== 'idle' && <button className="generate stop" onClick={stop}><Square size={14} />停止</button>}
     </div>
-    {phase === 'connecting' && <div className="ai-connecting">模型正在推理，首次输出可能需要 20~40 秒（取决于模型与字数），请耐心等待…</div>}
+    {phase === 'connecting' && <div className="ai-connecting">模型正在推理… 已等待 {elapsed} 秒（首次输出通常 20~40 秒，若超过 90 秒会自动重试一次）</div>}
     {(output || error) && <div className="ai-meta"><Sparkles size={12} />模型 <b>{model || 'mock'}</b>{phase !== 'idle' && <span>· 生成中</span>}</div>}
     {error && <div className="form-error">{error}</div>}
     {output && <div className={'ai-output' + (phase === 'streaming' ? ' streaming' : '')}>{output}</div>}
@@ -476,6 +490,7 @@ function AgentPanel({ workspace, onAccept }: { workspace: Workspace; onAccept: (
   const [modelId, setModelId] = useState<number | null>(null)
   const [output, setOutput] = useState('')
   const [phase, setPhase] = useState<'idle' | 'connecting' | 'streaming'>('idle')
+  const elapsed = useConnectingTimer(phase)
   const abortRef = useRef<AbortController | null>(null)
   const run = async () => {
     setOutput(''); setPhase('connecting')
@@ -505,7 +520,7 @@ function AgentPanel({ workspace, onAccept }: { workspace: Workspace; onAccept: (
       <button className="generate" onClick={run} disabled={phase !== 'idle'}><Bot size={15} />{phase === 'connecting' ? '正在连接模型…' : phase === 'streaming' ? '运行中…' : '运行写作 Agent'}</button>
       {phase !== 'idle' && <button className="generate stop" onClick={stop}><Square size={14} />停止</button>}
     </div>
-    {phase === 'connecting' && <div className="ai-connecting">模型正在推理，首次输出可能需要 20~40 秒（取决于模型与字数），请耐心等待…</div>}
+    {phase === 'connecting' && <div className="ai-connecting">模型正在推理… 已等待 {elapsed} 秒（首次输出通常 20~40 秒，若超过 90 秒会自动重试一次）</div>}
     {output && <><div className={'ai-output' + (phase === 'streaming' ? ' streaming' : '')}>{output}</div>{phase === 'idle' && <div className="ai-actions"><Button onClick={() => setOutput('')}>丢弃</Button><Button kind="primary" onClick={() => { onAccept(output.trim()); setOutput('') }}><Check size={14} />采纳</Button></div>}</>}
   </div>
 }

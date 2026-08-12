@@ -295,8 +295,17 @@ export async function* streamAI(
       if (data === '[DONE]') return
       try {
         const parsed = JSON.parse(data)
+        // The backend turns upstream failures into a `{"error": "..."}` SSE
+        // event. Surface it as a throw so callers actually see *why* it failed
+        // (429 / 401 / read-timeout / 5xx) instead of a generic "no content".
+        if (parsed.error) {
+          throw new Error(typeof parsed.error === 'string' ? parsed.error : 'AI 生成失败')
+        }
         if (parsed.text) yield { text: parsed.text, model: parsed.model ?? '' }
-      } catch {
+      } catch (e) {
+        // Re-throw real errors (from the `if (parsed.error)` branch above);
+        // only swallow JSON parse failures of partial chunks.
+        if (e instanceof Error && e.message && !e.message.startsWith('Unexpected')) throw e
         /* keep partial */
       }
     }

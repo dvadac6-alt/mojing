@@ -55,7 +55,11 @@ class OpenAICompatProvider:
             "stream": True,
         }
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
+        # read timeout caps how long we wait for the *first* token (and for any
+        # gap between chunks). 90s comfortably covers a real model's 20-40s
+        # first-token latency while still failing a truly dead connection far
+        # sooner than the old 120s. The dispatcher retries once on top of this.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=15.0)) as client:
             async with client.stream("POST", self._endpoint(), headers=headers, json=payload) as response:
                 if response.status_code >= 400:
                     body = (await response.aread()).decode("utf-8", errors="replace")

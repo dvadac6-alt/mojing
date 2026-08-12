@@ -97,7 +97,12 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
   const [overrides, setOverrides] = useState<Record<string, { x: number; y: number }>>({})
 
   const mapRef = useRef<HTMLDivElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
+  // Two stacked canvases (#4): the base layer holds all committed strokes
+  // (repainted only when doodles change), the live layer holds just the stroke
+  // currently being dragged (repainted every mousemove). Dragging is O(1)/frame
+  // instead of O(N) — matters once a map has dozens of strokes.
+  const baseCanvasRef = useRef<HTMLCanvasElement>(null)
+  const liveCanvasRef = useRef<HTMLCanvasElement>(null)
   const dragRef = useRef<{ id: string } | null>(null)
   const strokeRef = useRef<Doodle | null>(null)
   const doodlesRef = useRef<Doodle[]>([])
@@ -143,44 +148,63 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
     workspaceApi.listTerrains(currentMapId).then(setTerrains).catch(() => {})
   }, [currentMapId])
 
-  // --- canvas rendering ---
-  const redraw = useCallback(() => {
-    const canvas = canvasRef.current
-    const wrap = mapRef.current
-    if (!canvas || !wrap) return
+  // --- canvas rendering (two layers) ---
+  // sizeCanvas keeps a canvas's backing store in sync with its CSS box + DPR.
+  const sizeCanvas = (canvas: HTMLCanvasElement, w: number, h: number) => {
     const dpr = window.devicePixelRatio || 1
-    const w = wrap.clientWidth
-    const h = wrap.clientHeight
-    if (!w || !h) return
     if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
       canvas.width = Math.round(w * dpr)
       canvas.height = Math.round(h * dpr)
     }
     const ctx = canvas.getContext('2d')
+    if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  }
+
+  // Base layer = every committed stroke. Repainted only when doodles change.
+  const redrawBase = useCallback(() => {
+    const canvas = baseCanvasRef.current
+    const wrap = mapRef.current
+    if (!canvas || !wrap) return
+    const w = wrap.clientWidth, h = wrap.clientHeight
+    if (!w || !h) return
+    sizeCanvas(canvas, w, h)
+    const ctx = canvas.getContext('2d')
     if (!ctx) return
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, w, h)
-    // Saved strokes first, then the in-progress stroke on top so it stays
-    // visible while dragging (and erasing with destination-out hits it last).
     doodlesRef.current.forEach(s => drawStroke(ctx, s, w, h))
+  }, [])
+
+  // Live layer = the stroke currently being dragged. Repainted every move;
+  // cleared (nothing drawn) once the stroke is committed to the base layer.
+  const redrawLive = useCallback(() => {
+    const canvas = liveCanvasRef.current
+    const wrap = mapRef.current
+    if (!canvas || !wrap) return
+    const w = wrap.clientWidth, h = wrap.clientHeight
+    if (!w || !h) return
+    sizeCanvas(canvas, w, h)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.clearRect(0, 0, w, h)
     if (strokeRef.current) drawStroke(ctx, strokeRef.current, w, h)
   }, [])
 
-  // Redraw whenever the saved stroke list or the active map changes; this also
-  // clears stale doodles when switching maps (the effect runs after the doodles
-  // state has been updated for the new map).
+  const redrawAll = useCallback(() => { redrawBase(); redrawLive() }, [redrawBase, redrawLive])
+
+  // Base repaints when the committed stroke list or the active map changes
+  // (also clears stale doodles when switching maps). Resize hits both layers.
   useEffect(() => {
-    redraw()
-    window.addEventListener('resize', redraw)
-    return () => window.removeEventListener('resize', redraw)
-  }, [redraw, currentMapId, doodles])
+    redrawAll()
+    window.addEventListener('resize', redrawAll)
+    return () => window.removeEventListener('resize', redrawAll)
+  }, [redrawAll, currentMapId, doodles])
 
   // --- doodle interaction (brush / eraser) ---
   const onCanvasMouseDown = useCallback((e: React.MouseEvent) => {
-    if (tool === 'select' || !canvasRef.current || !mapRef.current) return
+    if (tool === 'select' || !baseCanvasRef.current || !mapRef.current) return
     e.preventDefault()
     e.stopPropagation()
-    const rect = canvasRef.current.getBoundingClientRect()
+    const rect = baseCanvasRef.current.getBoundingClientRect()
     const x = ((e.clientX - rect.left) / rect.width) * 100
     const y = ((e.clientY - rect.top) / rect.height) * 100
     strokeRef.current = {
@@ -194,22 +218,24 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
   useEffect(() => {
     const move = (e: MouseEvent) => {
       const stroke = strokeRef.current
-      const canvas = canvasRef.current
+      const canvas = baseCanvasRef.current
       const wrap = mapRef.current
       if (!stroke || !canvas || !wrap) return
       const rect = canvas.getBoundingClientRect()
       const x = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100))
       const y = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100))
       stroke.points.push([x, y])
-      redraw()
+      // Only the thin live layer repaints per frame — the base layer (all
+      // committed strokes) is untouched, so cost is independent of stroke count.
+      redrawLive()
     }
     const up = () => {
       const stroke = strokeRef.current
       strokeRef.current = null
       if (!stroke || stroke.points.length < 2 || !currentMapId) return
       // Incremental: append just this one stroke to the server (O(1) per pen-up,
-      // instead of rewriting the whole doodle blob). Local state updates
-      // immediately so the canvas keeps showing it.
+      // instead of rewriting the whole doodle blob). Committing to doodles
+      // triggers the base-layer repaint; the live layer clears alongside it.
       setDoodles(prev => [...prev, stroke])
       workspaceApi.createStroke(currentMapId, {
         color: stroke.color, width: stroke.width, eraser: !!stroke.eraser, points: stroke.points,
@@ -221,7 +247,7 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
     }
-  }, [redraw, currentMapId])
+  }, [redrawLive, currentMapId])
 
   // --- marker drag (edit mode) ---
   const onMarkerMouseDown = useCallback((e: React.MouseEvent, id: string) => {
@@ -424,10 +450,14 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
           {/* map canvas: doodle layer under markers */}
           <div className={'visual-map' + (editMode ? ' editing' : '')} ref={mapRef}
             onMouseMove={onMapMouseMove} onMouseUp={onMapMouseUp} onMouseLeave={onMapMouseUp}>
-            <canvas ref={canvasRef}
-              className={'map-canvas' + (toolIsPaint ? ' painting' : '')}
+            {/* Two stacked canvases: base = committed strokes, live = the stroke
+                being dragged. Mouse events hit the base layer; the live layer
+                sits above it with pointer-events:none. */}
+            <canvas ref={baseCanvasRef}
+              className={'map-canvas base' + (toolIsPaint ? ' painting' : '')}
               onMouseDown={onCanvasMouseDown}
               onDoubleClick={() => { if (toolIsPaint) setTool('select') }} />
+            <canvas ref={liveCanvasRef} className="map-canvas live" aria-hidden="true" />
             {markers.map(m => (
               <span key={m.id} className={'marker' + (m.level === 0 ? ' top' : m.level === 2 ? ' leaf' : '') + (selected?.id === m.id ? ' active' : '') + (editMode ? ' draggable' : '') + (toolIsPaint ? ' passive' : '')}
                 style={{ left: m.x + '%', top: m.y + '%', '--mc': TYPE_COLOR[m.type] || '#666' } as React.CSSProperties}

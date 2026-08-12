@@ -757,8 +757,10 @@ kbd { font-family: inherit; font-size: 10px; line-height: 1; border: 1px solid c
 .marker.leaf > i { width: 18px; height: 18px; }
 .marker.leaf strong { font-size: 6px; }
 .marker.active > i { background: var(--accent); box-shadow: 0 0 0 4px rgba(164,93,67,.22); }
-/* doodle canvas layer under the markers */
-.map-canvas { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; touch-action: none; }
+/* doodle canvas layers under the markers */
+.map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+.map-canvas.base { z-index: 1; }
+.map-canvas.live { z-index: 2; pointer-events: none; }
 .map-canvas.painting { cursor: crosshair; }
 .marker { z-index: 3; }
 .marker.passive { pointer-events: none; }

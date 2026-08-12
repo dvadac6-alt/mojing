@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ChevronDown, MapPin, PenLine, Trash2 } from 'lucide-react'
 import { workspaceApi, type Location as Loc, type StoryMap, type Workspace } from '../workspaceApi'
 import { Button, Detail, EmptyStateWrap, Field, Modal, PaneHead, SearchBox } from '../components/ui'
@@ -15,7 +15,19 @@ export function LocationsPage({ workspace, reload }: { workspace: Workspace; rel
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   useEffect(() => { if (!locs.find(l => l.id === selectedId)) setSelectedId(locs[0]?.id ?? '') }, [locs])
   const current = locs.find(l => l.id === selectedId) ?? locs[0]
-  const childrenOf = (id: string | null) => locs.filter(l => l.parent_location_id === id)
+  // Parent→children index: the tree calls childrenOf() for every rendered node,
+  // so a Map lookup (O(1)) replaces an O(N) filter per node — matters once a
+  // novel has hundreds of locations.
+  const kidsByParent = useMemo(() => {
+    const m = new Map<string, Loc[]>()
+    for (const l of locs) {
+      if (!l.parent_location_id) continue
+      const arr = m.get(l.parent_location_id)
+      if (arr) arr.push(l); else m.set(l.parent_location_id, [l])
+    }
+    return m
+  }, [locs])
+  const childrenOf = (id: string | null) => (id ? (kidsByParent.get(id) ?? []) : locs.filter(l => !l.parent_location_id))
 
   const toggleCollapse = (id: string) => setCollapsed(prev => {
     const next = new Set(prev)

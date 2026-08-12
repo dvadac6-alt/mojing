@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Brush, Check, ChevronRight, Eraser, Map as MapIcon, MapPin, Maximize2,
   MousePointer2, Move, Palette, Pencil, Plus, Sparkles, Trash2, Undo2, X,
@@ -11,10 +11,19 @@ import { Button, PageHeader } from '../components/ui'
 type MarkerDef = { id: string; name: string; type: string; x: number; y: number; level: number }
 
 /** Spread locations across the map canvas in concentric rings grouped by
- * hierarchy level (city → district → building), so related places cluster. */
+ * hierarchy level (city → district → building), so related places cluster.
+ * Builds a parent→children index once so lookup is O(1) per node (was O(N)). */
 function layoutMarkers(locations: Location[]): MarkerDef[] {
-  const tops = locations.filter(l => !l.parent_location_id || !locations.some(p => p.id === l.parent_location_id))
-  const childrenOf = (id: string) => locations.filter(l => l.parent_location_id === id)
+  const idSet = new Set(locations.map(l => l.id))
+  const kidsByParent = new Map<string, Location[]>()
+  for (const l of locations) {
+    if (!l.parent_location_id) continue
+    const arr = kidsByParent.get(l.parent_location_id)
+    if (arr) arr.push(l); else kidsByParent.set(l.parent_location_id, [l])
+  }
+  const childrenOf = (id: string) => kidsByParent.get(id) ?? []
+  // A top-level node has no parent, or its parent isn't in this map's set.
+  const tops = locations.filter(l => !l.parent_location_id || !idSet.has(l.parent_location_id))
   const out: MarkerDef[] = []
   tops.forEach((top, i) => {
     const angle = (i / Math.max(1, tops.length)) * 2 * Math.PI - Math.PI / 2
@@ -97,6 +106,17 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
   const currentMap = maps.find(m => m.id === currentMapId) ?? null
   // Locations on this map (legacy rows without a map belong everywhere).
   const mapLocations = allLocations.filter(l => !currentMap || l.map_id === currentMapId || l.map_id === null)
+  // Parent→children index built once per render so "下级数量" and the detail
+  // panel's child list are O(1) lookups instead of re-filtering every node.
+  const kidsByParent = useMemo(() => {
+    const m = new Map<string, Location[]>()
+    for (const l of mapLocations) {
+      if (!l.parent_location_id) continue
+      const arr = m.get(l.parent_location_id)
+      if (arr) arr.push(l); else m.set(l.parent_location_id, [l])
+    }
+    return m
+  }, [mapLocations])
   const baseMarkers = layoutMarkers(mapLocations)
   const markers = baseMarkers.map(m => ({ ...m, ...(overrides[m.id] ?? {}) }))
 
@@ -318,7 +338,7 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
           <button key={loc.id} className={'map-list-item' + (selected?.id === loc.id ? ' active' : '')}
             onClick={() => setSelected(loc)}>
             <span style={{ color: TYPE_COLOR[loc.type] || '#666' }}><MapPin size={15} /></span>
-            <div><strong>{loc.name}</strong><small>{loc.type || '地点'} · {mapLocations.filter(l => l.parent_location_id === loc.id).length} 下级</small></div>
+            <div><strong>{loc.name}</strong><small>{loc.type || '地点'} · {(kidsByParent.get(loc.id) ?? []).length} 下级</small></div>
             <ChevronRight size={13} />
           </button>
         ))}
@@ -434,7 +454,7 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
           <p>{selected.description || '暂无描述'}</p>
           {selected.parent_location_id && <small>上级：{mapLocations.find(l => l.id === selected.parent_location_id)?.name ?? '—'}</small>}
           <div className="map-detail-kids">
-            {mapLocations.filter(l => l.parent_location_id === selected.id).map(k => (
+            {(kidsByParent.get(selected.id) ?? []).map(k => (
               <button key={k.id} onClick={() => setSelected(k)}><MapPin size={11} />{k.name}</button>
             ))}
           </div>

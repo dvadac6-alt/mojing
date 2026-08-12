@@ -2,8 +2,10 @@ node_modules/
 dist/
 .vite/
 backend/data/
-backend/storage.json
 backend/.mojing_secret
+# Auth token + data-dir config — generated at runtime, must never ship
+storage.json
+**/storage.json
 # PyInstaller build outputs (mojing-backend.exe etc.)
 backend/build/
 backend/dist/

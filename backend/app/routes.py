@@ -309,8 +309,25 @@ def get_workspace(database: Session = Depends(get_db)):
 # ---------------------------------------------------------------- novels
 @router.get("/novels", response_model=list[NovelResponse])
 def list_novels(database: Session = Depends(get_db)):
-    novels = database.scalars(select(Novel).order_by(Novel.updated_at.desc())).all()
-    return [_novel(n, database) for n in novels]
+    # One grouped query instead of 2 sub-selects per novel (was 2N+1 queries).
+    # SQLite lets us group by the primary key and read the other Novel columns.
+    rows = database.execute(
+        select(
+            Novel,
+            func.coalesce(func.sum(Chapter.word_count), 0).label("total_words"),
+            func.count(Chapter.id).label("chapter_count"),
+        )
+        .outerjoin(Chapter, Chapter.novel_id == Novel.id)
+        .group_by(Novel.id)
+        .order_by(Novel.updated_at.desc())
+    ).all()
+    out = []
+    for novel, total_words, chapter_count in rows:
+        resp = NovelResponse.model_validate(novel)
+        resp.total_words = total_words or 0
+        resp.chapter_count = chapter_count or 0
+        out.append(resp)
+    return out
 
 
 @router.post("/novels", response_model=NovelResponse, status_code=201)

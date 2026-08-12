@@ -99,6 +99,18 @@ export type Terrain = {
   created_at: string
 }
 
+/** A persisted doodle stroke (one row per stroke, stored incrementally). */
+export type Stroke = {
+  id: string
+  map_id: string
+  color: string
+  width: number
+  eraser: boolean
+  points: number[][]
+  seq: number
+  created_at: string
+}
+
 export type WorldSetting = {
   id: string
   novel_id: string
@@ -367,6 +379,12 @@ const api = {
   updateTerrain: (id: string, data: Partial<Terrain>) =>
     request<Terrain>(`/terrains/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteTerrain: (id: string) => request<void>(`/terrains/${id}`, { method: 'DELETE' }),
+  // map strokes — incremental doodle persistence (one row per stroke)
+  listStrokes: (mapId: string) => request<Stroke[]>(`/maps/${mapId}/strokes`),
+  createStroke: (mapId: string, data: Omit<Stroke, 'id' | 'map_id' | 'seq' | 'created_at'>) =>
+    request<Stroke>(`/maps/${mapId}/strokes`, { method: 'POST', body: JSON.stringify(data) }),
+  undoLastStroke: (mapId: string) => request<void>(`/maps/${mapId}/strokes/last`, { method: 'DELETE' }),
+  clearStrokes: (mapId: string) => request<void>(`/maps/${mapId}/strokes`, { method: 'DELETE' }),
 
   // world settings
   listSettings: (novelId: string) => request<WorldSetting[]>(`/novels/${novelId}/settings`),

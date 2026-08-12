@@ -258,6 +258,25 @@ class TerrainResponse(OrmModel):
     created_at: datetime
 
 
+# ---------- Map strokes (one row per doodle stroke) ----------
+class StrokeCreate(BaseModel):
+    color: str = Field(min_length=4, max_length=20)
+    width: float = Field(gt=0, le=100)
+    eraser: bool = False
+    points: list[list[float]] = Field(min_length=1)
+
+
+class StrokeResponse(OrmModel):
+    id: str
+    map_id: str
+    color: str
+    width: float
+    eraser: bool
+    points: list[list[float]]
+    seq: int
+    created_at: datetime
+
+
 # ---------- WorldSetting ----------
 class WorldSettingCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)

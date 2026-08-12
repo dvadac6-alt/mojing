@@ -24,6 +24,7 @@ from .models import (
     GraphEdge,
     StoryMap,
     Terrain,
+    MapStroke,
     ThreadPriority,
     ThreadStatus,
     WorldSetting,
@@ -66,6 +67,8 @@ from .schemas import (
     StoryMapCreate,
     StoryMapResponse,
     StoryMapUpdate,
+    StrokeCreate,
+    StrokeResponse,
     TerrainCreate,
     TerrainResponse,
     TerrainUpdate,
@@ -131,6 +134,10 @@ def _story_map(m: StoryMap) -> StoryMapResponse:
 
 def _terrain(t: Terrain) -> TerrainResponse:
     return TerrainResponse.model_validate(t)
+
+
+def _stroke(s: MapStroke) -> StrokeResponse:
+    return StrokeResponse.model_validate(s)
 
 
 def _setting(s: WorldSetting) -> WorldSettingResponse:
@@ -729,6 +736,49 @@ def delete_terrain(terrain_id: str, database: Session = Depends(get_db)):
     if not terrain:
         raise HTTPException(status_code=404, detail="Terrain not found")
     database.delete(terrain)
+    database.commit()
+
+
+# ---------------------------------------------------------------- map strokes (incremental doodles)
+@router.get("/maps/{map_id}/strokes", response_model=list[StrokeResponse])
+def list_strokes(map_id: str, database: Session = Depends(get_db)):
+    if not database.get(StoryMap, map_id):
+        raise HTTPException(status_code=404, detail="Map not found")
+    return [_stroke(s) for s in database.scalars(
+        select(MapStroke).where(MapStroke.map_id == map_id).order_by(MapStroke.seq))]
+
+
+@router.post("/maps/{map_id}/strokes", response_model=StrokeResponse, status_code=201)
+def create_stroke(map_id: str, payload: StrokeCreate, database: Session = Depends(get_db)):
+    if not database.get(StoryMap, map_id):
+        raise HTTPException(status_code=404, detail="Map not found")
+    # seq = current max + 1, so order is stable without a timestamp tiebreak.
+    next_seq = (database.scalar(
+        select(func.max(MapStroke.seq)).where(MapStroke.map_id == map_id)) or 0) + 1
+    stroke = MapStroke(map_id=map_id, seq=next_seq, **payload.model_dump())
+    database.add(stroke)
+    database.commit()
+    database.refresh(stroke)
+    return _stroke(stroke)
+
+
+@router.delete("/maps/{map_id}/strokes/last", status_code=204)
+def undo_last_stroke(map_id: str, database: Session = Depends(get_db)):
+    """Undo = drop the highest-seq stroke. O(1) instead of rewriting the whole blob."""
+    if not database.get(StoryMap, map_id):
+        raise HTTPException(status_code=404, detail="Map not found")
+    last = database.scalar(
+        select(MapStroke).where(MapStroke.map_id == map_id).order_by(MapStroke.seq.desc()).limit(1))
+    if last:
+        database.delete(last)
+        database.commit()
+
+
+@router.delete("/maps/{map_id}/strokes", status_code=204)
+def clear_strokes(map_id: str, database: Session = Depends(get_db)):
+    if not database.get(StoryMap, map_id):
+        raise HTTPException(status_code=404, detail="Map not found")
+    database.query(MapStroke).filter(MapStroke.map_id == map_id).delete(synchronize_session=False)
     database.commit()
 
 

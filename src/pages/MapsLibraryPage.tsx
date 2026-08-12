@@ -91,7 +91,6 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dragRef = useRef<{ id: string } | null>(null)
   const strokeRef = useRef<Doodle | null>(null)
-  const saveTimer = useRef<number | null>(null)
   const doodlesRef = useRef<Doodle[]>([])
   useEffect(() => { doodlesRef.current = doodles }, [doodles])
 
@@ -112,13 +111,17 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
     return () => { alive = false }
   }, [novelId])
 
-  // Switching map → load its doodles + terrains.
+  // Switching map → load its strokes + terrains (strokes live in their own
+  // table now, one row per pen-up, so loading is independent of the map blob).
   useEffect(() => {
     if (!currentMapId) { setDoodles([]); setTerrains([]); return }
-    const map = maps.find(m => m.id === currentMapId)
-    setDoodles(map?.doodles ?? [])
+    workspaceApi.listStrokes(currentMapId)
+      .then(strokes => setDoodles(strokes.map(s => ({
+        color: s.color, width: s.width, eraser: s.eraser, points: s.points as [number, number][],
+      }))))
+      .catch(() => setDoodles([]))
     workspaceApi.listTerrains(currentMapId).then(setTerrains).catch(() => {})
-  }, [currentMapId, maps])
+  }, [currentMapId])
 
   // --- canvas rendering ---
   const redraw = useCallback(() => {
@@ -183,14 +186,14 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
     const up = () => {
       const stroke = strokeRef.current
       strokeRef.current = null
-      if (!stroke || stroke.points.length < 2) return
-      const next = [...doodlesRef.current, stroke]
-      setDoodles(next)
-      // Debounced persist of the full stroke list.
-      if (saveTimer.current) window.clearTimeout(saveTimer.current)
-      saveTimer.current = window.setTimeout(() => {
-        if (currentMapId) workspaceApi.updateMap(currentMapId, { doodles: next }).catch(() => {})
-      }, 400)
+      if (!stroke || stroke.points.length < 2 || !currentMapId) return
+      // Incremental: append just this one stroke to the server (O(1) per pen-up,
+      // instead of rewriting the whole doodle blob). Local state updates
+      // immediately so the canvas keeps showing it.
+      setDoodles(prev => [...prev, stroke])
+      workspaceApi.createStroke(currentMapId, {
+        color: stroke.color, width: stroke.width, eraser: !!stroke.eraser, points: stroke.points,
+      }).catch(() => {})
     }
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
@@ -239,22 +242,17 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
     setConfirmDeleteMap(null)
   }
 
-  // --- doodle actions ---
-  const persistDoodles = (next: Doodle[]) => {
+  // --- doodle actions (incremental: each op hits a dedicated endpoint) ---
+  const undo = () => {
     if (!currentMapId) return
-    workspaceApi.updateMap(currentMapId, { doodles: next }).catch(() => {})
+    setDoodles(prev => (prev.length ? prev.slice(0, -1) : prev))
+    workspaceApi.undoLastStroke(currentMapId).catch(() => {})
   }
 
-  const undo = () => setDoodles(prev => {
-    if (!prev.length) return prev
-    const next = prev.slice(0, -1)
-    persistDoodles(next)
-    return next
-  })
-
   const clearDoodles = () => {
+    if (!currentMapId) return
     setDoodles([])
-    persistDoodles([])
+    workspaceApi.clearStrokes(currentMapId).catch(() => {})
     setConfirmClear(false)
   }
 

@@ -215,6 +215,9 @@ class StoryMap(Base):
     terrains: Mapped[list["Terrain"]] = relationship(
         back_populates="map", cascade="all, delete-orphan", order_by="Terrain.created_at"
     )
+    strokes: Mapped[list["MapStroke"]] = relationship(
+        back_populates="map", cascade="all, delete-orphan", order_by="MapStroke.seq"
+    )
     locations: Mapped[list[Location]] = relationship(back_populates="story_map")
 
 
@@ -230,6 +233,25 @@ class Terrain(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     map: Mapped[StoryMap] = relationship(back_populates="terrains")
+
+
+class MapStroke(Base):
+    """A single free-hand stroke on a map canvas. Stored one-row-per-stroke so
+    appending / undoing / clearing is O(1) instead of rewriting the whole
+    doodle blob on every pen-up. Points are 0-100 percentages (size-independent)."""
+
+    __tablename__ = "map_strokes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    map_id: Mapped[str] = mapped_column(String(36), ForeignKey("story_maps.id", ondelete="CASCADE"), nullable=False)
+    color: Mapped[str] = mapped_column(String(20), nullable=False)
+    width: Mapped[float] = mapped_column(Float, nullable=False, default=6)
+    eraser: Mapped[bool] = mapped_column(default=False, nullable=False)
+    points: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    map: Mapped[StoryMap] = relationship(back_populates="strokes")
 
 
 class WorldSetting(Base):

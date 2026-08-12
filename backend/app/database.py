@@ -5,7 +5,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 
@@ -215,9 +215,56 @@ def init_db() -> None:
     _migrate_legacy_db(DATABASE_PATH)
     Base.metadata.create_all(bind=engine)
     _migrate_legacy_columns()
+    _migrate_doodles_to_strokes()
     # (#2) Snapshot the DB on every launch — guards against file-level loss
     # that chapter_versions cannot (disk fault, accidental delete, sync corruption).
     backup_once()
+
+
+def _migrate_doodles_to_strokes() -> None:
+    """One-time migration: the old `story_maps.doodles` JSON blob held every
+    stroke in one column. The new `map_strokes` table stores one row per
+    stroke so append/undo/clear is O(1). Move any pre-existing blob into rows,
+    then blank the column so we don't re-migrate next launch."""
+    import uuid
+    with engine.connect() as conn:
+        # story_maps may predate this migration (or be brand new with no doodles).
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(story_maps)")}
+        if "doodles" not in cols:
+            return
+        rows = conn.exec_driver_sql(
+            "SELECT id, doodles FROM story_maps WHERE doodles IS NOT NULL AND doodles != '[]'"
+        ).fetchall()
+        if not rows:
+            return
+        for map_id, doodles in rows:
+            try:
+                strokes = json.loads(doodles) if isinstance(doodles, str) else doodles
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(strokes, list):
+                continue
+            for seq, s in enumerate(strokes, start=1):
+                if not isinstance(s, dict) or not s.get("points"):
+                    continue
+                conn.execute(
+                    text(
+                        "INSERT INTO map_strokes (id, map_id, color, width, eraser, points, seq) "
+                        "VALUES (:id, :map_id, :color, :width, :eraser, :points, :seq)"
+                    ),
+                    {
+                        "id": str(uuid.uuid4()),
+                        "map_id": map_id,
+                        "color": s.get("color", "#000000"),
+                        "width": float(s.get("width", 6)),
+                        "eraser": 1 if s.get("eraser") else 0,
+                        "points": json.dumps(s.get("points", [])),
+                        "seq": seq,
+                    },
+                )
+            # Mark migrated so we don't redo it (and so the blob stops being the source of truth).
+            conn.exec_driver_sql("UPDATE story_maps SET doodles = '[]' WHERE id = :id", {"id": map_id})
+        conn.commit()
 
 
 def _migrate_legacy_columns() -> None:
@@ -277,6 +324,7 @@ def set_data_dir(new_dir: str | Path) -> dict:
         DATABASE_PATH = target_db
         Base.metadata.create_all(bind=engine)
         _migrate_legacy_columns()
+        _migrate_doodles_to_strokes()
         info = storage_info()
         info["mounted_existing"] = mounted_existing
         return info

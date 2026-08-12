@@ -772,6 +772,12 @@ kbd { font-family: inherit; font-size: 10px; line-height: 1; border: 1px solid c
 .map-detail-kids button:hover { background: #e8e3d6; color: #4d544f; }
 .map-empty { position: absolute; inset: 0; display: grid; place-items: center; color: #b4b1a8; }
 .map-empty p { margin: 8px 0 0; font-size: 11px; }
+.edit-hint { display: flex; align-items: center; gap: 5px; color: #9a6853; font-size: 9px; margin-right: auto; }
+.visual-map.editing { cursor: crosshair; }
+.visual-map.editing .marker { cursor: grab; }
+.visual-map.editing .marker:active { cursor: grabbing; }
+.marker.draggable { transition: none; }
+.marker.draggable:hover { transform: translate(-50%, -100%) scale(1.2); box-shadow: 0 4px 12px rgba(30,35,34,.2); }
 .map-loc-list { flex: 1; overflow-y: auto; padding-bottom: 10px; }
 .library-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 80px 20px; color: #b4b1a8; }
 .library-empty h3 { margin: 8px 0 0; font-family: "Noto Serif SC", serif; font-size: 14px; color: #8a8d88; }

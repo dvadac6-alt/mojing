@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import {
   Check, ChevronRight, Map as MapIcon, MapPin, Maximize2, MousePointer2,
-  Move, Plus, Sparkles,
+  Move, Pencil, Plus, Sparkles,
 } from 'lucide-react'
 import type { Location, Workspace } from '../workspaceApi'
 import { Button, PageHeader } from '../components/ui'
@@ -24,7 +24,6 @@ function layoutMarkers(locations: Location[]): MarkerDef[] {
     kids.forEach((k, j) => {
       const ka = (j / Math.max(1, kids.length)) * 2 * Math.PI
       out.push({ id: k.id, name: k.name, type: k.type, x: x + 14 * Math.cos(ka), y: y + 14 * Math.sin(ka), level: 1 })
-      // grandchildren
       const gk = childrenOf(k.id)
       gk.forEach((g, gi) => {
         const ga = (gi / Math.max(1, gk.length)) * 2 * Math.PI
@@ -43,7 +42,31 @@ const TYPE_COLOR: Record<string, string> = {
 export function MapsPage({ workspace }: { workspace: Workspace }) {
   const locations = workspace.locations
   const [selected, setSelected] = useState<Location | null>(null)
-  const markers = layoutMarkers(locations)
+  const [editMode, setEditMode] = useState(false)
+  // User-dragged marker positions (percent), overriding the auto-layout.
+  const [overrides, setOverrides] = useState<Record<string, { x: number; y: number }>>({})
+  const mapRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<{ id: string } | null>(null)
+  const baseMarkers = layoutMarkers(locations)
+  // Merge auto-layout with manual overrides.
+  const markers = baseMarkers.map(m => ({ ...m, ...(overrides[m.id] ?? {}) }))
+
+  const onMarkerMouseDown = useCallback((e: React.MouseEvent, id: string) => {
+    if (!editMode) return
+    e.preventDefault()
+    e.stopPropagation()
+    dragRef.current = { id }
+  }, [editMode])
+
+  const onMapMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!dragRef.current || !mapRef.current) return
+    const rect = mapRef.current.getBoundingClientRect()
+    const x = Math.max(2, Math.min(98, ((e.clientX - rect.left) / rect.width) * 100))
+    const y = Math.max(2, Math.min(98, ((e.clientY - rect.top) / rect.height) * 100))
+    setOverrides(prev => ({ ...prev, [dragRef.current!.id]: { x, y } }))
+  }, [])
+
+  const onMapMouseUp = useCallback(() => { dragRef.current = null }, [])
 
   return <div className="maps-page">
     <aside className="entity-pane">
@@ -63,23 +86,29 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
     <section className="map-main">
       <div className="map-head">
         <div><label>空间关系图</label><strong>{workspace.novel.title} · {locations.length} 个地点</strong></div>
+        {editMode && <span className="edit-hint"><Pencil size={12} />拖拽标记调整位置</span>}
+        <Button kind={editMode ? 'primary' : 'secondary'} onClick={() => setEditMode(v => !v)}>
+          {editMode ? <><Check size={13} />完成编辑</> : <><Pencil size={13} />编辑位置</>}
+        </Button>
         <Button><Maximize2 size={13} />适应画布</Button>
       </div>
       <div className="map-body">
         <div className="canvas-wrap">
           <div className="floating-tools">
-            <button className="active"><MousePointer2 size={14} />选择</button>
+            <button className={!editMode ? 'active' : ''} onClick={() => setEditMode(false)}><MousePointer2 size={14} />选择</button>
+            <button className={editMode ? 'active' : ''} onClick={() => setEditMode(true)}><Move size={14} />编辑拖拽</button>
             <button><MapPin size={14} />标记</button>
-            <button><Move size={14} />路线</button>
             <i />
             <button><Maximize2 size={14} /></button>
           </div>
-          {/* 地图画布：标记自动按层级环形布局 */}
-          <div className="visual-map">
+          {/* 地图画布：编辑模式下可拖拽标记 */}
+          <div className={'visual-map' + (editMode ? ' editing' : '')} ref={mapRef}
+            onMouseMove={onMapMouseMove} onMouseUp={onMapMouseUp} onMouseLeave={onMapMouseUp}>
             {markers.map(m => (
-              <span key={m.id} className={'marker' + (m.level === 0 ? ' top' : m.level === 2 ? ' leaf' : '') + (selected?.id === m.id ? ' active' : '')}
+              <span key={m.id} className={'marker' + (m.level === 0 ? ' top' : m.level === 2 ? ' leaf' : '') + (selected?.id === m.id ? ' active' : '') + (editMode ? ' draggable' : '')}
                 style={{ left: m.x + '%', top: m.y + '%', '--mc': TYPE_COLOR[m.type] || '#666' } as React.CSSProperties}
-                onClick={() => setSelected(locations.find(l => l.id === m.id) ?? null)}
+                onMouseDown={e => onMarkerMouseDown(e, m.id)}
+                onClick={() => !editMode && setSelected(locations.find(l => l.id === m.id) ?? null)}
                 title={m.name}>
                 <i><MapPin size={m.level === 0 ? 16 : 12} fill="currentColor" /></i>
                 <strong>{m.name}</strong>

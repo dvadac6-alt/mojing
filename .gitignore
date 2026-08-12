@@ -26,3 +26,4 @@ Thumbs.db
 gui-test-screenshots/
 # Local AI provider credentials (template lives at .env.example)
 .env
+.electron-dist/

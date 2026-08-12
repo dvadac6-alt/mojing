@@ -318,6 +318,25 @@ const api = {
   setStoragePath: (dataDir: string) =>
     request<StorageInfo>('/storage/path', { method: 'POST', body: JSON.stringify({ data_dir: dataDir }) }),
   resetStorage: () => request<StorageInfo>('/storage/reset', { method: 'POST' }),
+  // cross-device export/import — a zip of the whole data dir (#8). Blob/raw
+  // paths (not request<T>) because the payload isn't JSON.
+  exportData: async (): Promise<Blob> => {
+    const res = await fetch(`${API_BASE}/storage/export`, { headers: authHeaders() })
+    if (!res.ok) throw new Error('导出失败')
+    return res.blob()
+  },
+  importData: async (file: Blob): Promise<StorageInfo> => {
+    const res = await fetch(`${API_BASE}/storage/import`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/zip' },
+      body: file,
+    })
+    if (!res.ok) {
+      const detail = await res.json().catch(() => null)
+      throw new Error(detail?.detail ?? `导入失败（${res.status}）`)
+    }
+    return res.json()
+  },
 
   // workspace / novels
   load: () => request<Workspace>('/workspace'),

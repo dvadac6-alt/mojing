@@ -1,8 +1,9 @@
 import json
 import os
 import time
+from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -296,6 +297,61 @@ def set_storage_path(payload: dict):
 @router.post("/storage/reset")
 def reset_storage_path():
     return reset_data_dir()
+
+
+# ---------------------------------------------------------------- cross-device export / import (#8)
+@router.get("/storage/export")
+def export_data():
+    """Bundle the whole data dir into a zip for backup / moving to another
+    machine. WAL is checkpointed first so the snapshot is self-contained (no
+    -wal/-shm sidecars needed to restore)."""
+    import io
+    import zipfile
+    from .database import DATA_DIR, engine
+    with engine.connect() as conn:
+        conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.commit()
+    buf = io.BytesIO()
+    base = DATA_DIR
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in base.rglob("*"):
+            if path.is_file():
+                zf.write(path, path.relative_to(base))
+    buf.seek(0)
+    fname = f"mojing-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.post("/storage/import")
+async def import_data(request: Request):
+    """Restore from a backup zip: extract into a fresh sibling directory and
+    switch to it via set_data_dir (rebinds the engine + persists the choice).
+    The previous data dir is left intact on disk, so a bad import is revertible
+    by pointing storage back at the old folder."""
+    import io
+    import zipfile
+    from .database import DATA_DIR, set_data_dir
+    content = await request.body()
+    if not content:
+        raise HTTPException(status_code=400, detail="未收到备份内容")
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile as error:
+        raise HTTPException(status_code=400, detail="不是有效的 zip 备份") from error
+    # Reject absolute paths / parent traversal (zip-slip).
+    unsafe = [n for n in zf.namelist() if n.startswith("/") or ".." in n.split("/")]
+    if unsafe:
+        raise HTTPException(status_code=400, detail="压缩包含不安全路径，已拒绝")
+    target = DATA_DIR.parent / f"墨境数据-imported-{int(time.time())}"
+    target.mkdir(parents=True, exist_ok=True)
+    zf.extractall(target)
+    if not (target / "mojing.db").exists():
+        raise HTTPException(status_code=400, detail="备份中未找到 mojing.db，确认是否为墨境备份")
+    return set_data_dir(target)
 
 
 @router.get("/workspace", response_model=NovelDetailResponse)

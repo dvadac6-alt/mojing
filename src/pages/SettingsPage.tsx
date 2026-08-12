@@ -1,7 +1,7 @@
-import { useEffect, useState, type ElementType } from 'react'
+import { useEffect, useRef, useState, type ElementType } from 'react'
 import {
   Bot, BrainCircuit, Check, CircleHelp, Database, Download, Feather,
-  FileText, HardDrive, MapPin, PenLine, Plus, RefreshCw, Settings, ShieldCheck, Trash2,
+  FileText, HardDrive, MapPin, PenLine, Plus, RefreshCw, Settings, ShieldCheck, Trash2, Upload,
 } from 'lucide-react'
 import {
   chooseDataDirectory, workspaceApi,
@@ -237,6 +237,9 @@ function DataSection({ reload }: { reload: () => Promise<void> }) {
   const [backups, setBackups] = useState<{ name: string; size_kb: number; modified: string }[]>([])
   const [backupBusy, setBackupBusy] = useState(false)
   const [backupMsg, setBackupMsg] = useState('')
+  const [migrateBusy, setMigrateBusy] = useState(false)
+  const [migrateMsg, setMigrateMsg] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const hasNativePicker = !!window.mojingDesktop?.chooseDataDir
 
   const loadInfo = async () => { try { setInfo(await workspaceApi.getStorage()) } catch { /* ignore */ } }
@@ -268,6 +271,39 @@ function DataSection({ reload }: { reload: () => Promise<void> }) {
     setBusy(true); setError('')
     try { await workspaceApi.resetStorage(); await loadInfo(); await reload() }
     catch (e) { setError(e instanceof Error ? e.message : '恢复失败') } finally { setBusy(false) }
+  }
+
+  // Bundle the whole data dir into a zip and download it — for moving to
+  // another machine or off-site backup. WAL is checkpointed server-side first
+  // so the snapshot is consistent on its own.
+  const doExport = async () => {
+    setMigrateBusy(true); setMigrateMsg('')
+    try {
+      const blob = await workspaceApi.exportData()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `mojing-backup-${new Date().toISOString().slice(0, 10)}.zip`
+      document.body.appendChild(a); a.click(); a.remove()
+      URL.revokeObjectURL(url)
+      setMigrateMsg(`已导出 ${(blob.size / 1024 / 1024).toFixed(1)} MB 备份，可在另一台电脑用「导入备份」恢复。`)
+    } catch (e) { setMigrateMsg(e instanceof Error ? e.message : '导出失败') } finally { setMigrateBusy(false) }
+  }
+
+  // Restore from a backup zip: the server extracts to a fresh sibling dir and
+  // switches storage to it (the old data stays on disk, so a bad import is
+  // revertible via "选择保存路径" → pick the previous folder).
+  const doImport = async (file: File) => {
+    setMigrateBusy(true); setMigrateMsg('')
+    try {
+      await workspaceApi.importData(file)
+      await loadInfo()
+      await reload()
+      setMigrateMsg('导入成功，已切换到恢复的数据。当前作品列表已刷新。')
+    } catch (e) { setMigrateMsg(e instanceof Error ? e.message : '导入失败') } finally {
+      setMigrateBusy(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
   }
 
   const sizeLabel = info ? (info.db_size_kb >= 1024 ? `${(info.db_size_kb / 1024).toFixed(1)} MB` : `${info.db_size_kb} KB`) : '—'
@@ -307,6 +343,22 @@ function DataSection({ reload }: { reload: () => Promise<void> }) {
             <Button onClick={doBackup} disabled={backupBusy}>{backupBusy ? '备份中…' : '立即备份'}</Button>
           </div>
           {backups.length > 0 && <div className="backup-list">{backups.map(b => <div key={b.name}><span>{b.name}</span><small>{b.modified}</small><small>{b.size_kb} KB</small></div>)}</div>}
+        </section>
+      </div>
+      <div className="setting-block">
+        <header><h2>跨设备迁移</h2><p>把全部作品打包成一个 zip，拷到另一台电脑后用「导入备份」即可恢复（含所有章节、角色、地点、地图涂鸦、AI 配置）。换电脑、备份到网盘都用这个。</p></header>
+        <section>
+          <div className="database-card">
+            <span><Upload size={20} /></span>
+            <div>
+              <strong>导出 / 导入完整备份</strong>
+              <p>{migrateMsg || '导出会先把数据库 WAL 落盘，确保快照自洽；导入会切到新数据目录，原数据保留可回退。'}</p>
+            </div>
+            <Button onClick={doExport} disabled={migrateBusy}>{migrateBusy ? '处理中…' : '导出备份'}</Button>
+            <Button onClick={() => fileInputRef.current?.click()} disabled={migrateBusy}><Download size={13} />导入备份</Button>
+            <input ref={fileInputRef} type="file" accept=".zip,application/zip" hidden
+              onChange={e => { const f = e.target.files?.[0]; if (f) void doImport(f) }} />
+          </div>
         </section>
       </div>
     </div>

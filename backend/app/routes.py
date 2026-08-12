@@ -876,7 +876,7 @@ def test_ai_config(config_id: int, payload: AIConfigTestRequest, database: Sessi
 
 def _parse_model_context(item: dict) -> int | None:
     """Best-effort extraction of a model's context window from /models metadata.
-    Provider field names vary (OpenAI has none, OpenCode Zen/others add their
+    Provider field names vary (OpenAI has none, OpenCode Go/others add their
     own); accept common spellings and "128k"-style strings."""
     import re
     for key in ("context_length", "context_window", "max_context_length", "max_context_window",
@@ -938,6 +938,15 @@ def list_ai_models(payload: AIModelsRequest, database: Session = Depends(get_db)
     return {"ok": True, "detail": f"获取 {len(models)} 个模型", "models": models}
 
 
+@router.post("/ai/export-env")
+def export_ai_env(database: Session = Depends(get_db)):
+    """Write the active AI config (key decrypted server-side) to .env so the
+    user has one visible file holding the full credentials. The cleartext key
+    is never sent to the browser — it goes straight from DB → file."""
+    from .ai_env import export_env_config
+    return export_env_config(database)
+
+
 def _prepare_generation(req: AIGenerateRequest) -> tuple[list[dict[str, str]], AIConfig | None, str]:
     """Validate the request and build the prompt *before* the streaming response
     is created. Doing this here (rather than inside the async generator) means a
@@ -955,10 +964,10 @@ def _prepare_generation(req: AIGenerateRequest) -> tuple[list[dict[str, str]], A
             target_words=req.target_words, context=req.context, current_content=current_content,
         )
         # Per-call model override (the UI lets the user switch models on the fly);
-        # falls back to the active config when no config_id is given.
-        if req.config_id:
-            config = database.get(AIConfig, req.config_id)
-        else:
+        # falls back to the active config when no config_id is given OR when the
+        # specified config no longer exists (e.g. deleted while selected in the UI).
+        config = database.get(AIConfig, req.config_id) if req.config_id else None
+        if not config:
             config = _active_config(database)
         from .security import decrypt_key
         has_key = bool(decrypt_key(config.api_key)) if config else False

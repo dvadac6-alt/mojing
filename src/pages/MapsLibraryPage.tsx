@@ -1,20 +1,117 @@
-import type { ElementType } from 'react'
+import { useState } from 'react'
 import {
-  Archive, BookMarked, Check, ChevronDown, ChevronRight, FileText,
-  LibraryBig, Map, MapPin, Maximize2, MoreHorizontal, MousePointer2,
-  Move, Plus, Upload,
+  Check, ChevronRight, Map as MapIcon, MapPin, Maximize2, MousePointer2,
+  Move, Plus, Sparkles,
 } from 'lucide-react'
-import { Button, PageHeader, PaneHead, SearchBox } from '../components/ui'
+import type { Location, Workspace } from '../workspaceApi'
+import { Button, PageHeader } from '../components/ui'
 
-export function MapsPage() {
-  return <div className="maps-page"><aside className="entity-pane"><PaneHead eyebrow="空间可视化" title="地图" />{[['临川城全图', '城市 · 8 个标记'], ['城北旧区', '区域 · 5 个标记'], ['沈家密道', '副本 · 4 个标记']].map((x, i) => <button className={'map-list-item ' + (i === 0 ? 'active' : '')} key={x[0]}><span><Map size={17} /></span><div><strong>{x[0]}</strong><small>{x[1]}</small></div><ChevronRight size={13} /></button>)}</aside><section className="map-main"><div className="map-head"><div><label>城市地图</label><strong>临川城全图</strong></div><span><Check size={12} />预览</span><Button>编辑地图信息</Button></div><div className="map-body"><div className="canvas-wrap"><div className="floating-tools"><button className="active"><MousePointer2 size={14} />选择</button><button><MapPin size={14} />标记</button><button><Move size={14} />路线</button><i /><button><Maximize2 size={14} /></button></div><div className="visual-map"><i className="map-river r1" /><i className="map-river r2" /><em className="district d1">城北</em><em className="district d2">长街</em><em className="district d3">水巷</em><Marker cls="p1" label="归雁客栈" /><Marker cls="p2" label="临川书院" /><Marker cls="p3" label="无名渡口" /><Marker cls="p4 active" label="沈家旧宅" /><Marker cls="p5" label="钟楼" /></div></div></div></section></div>
+/** A marker placed on the map canvas, auto-derived from locations. */
+type MarkerDef = { id: string; name: string; type: string; x: number; y: number; level: number }
+
+/** Spread locations across the map canvas in concentric rings grouped by
+ * hierarchy level (city → district → building), so related places cluster. */
+function layoutMarkers(locations: Location[]): MarkerDef[] {
+  const tops = locations.filter(l => !l.parent_location_id)
+  const childrenOf = (id: string) => locations.filter(l => l.parent_location_id === id)
+  const out: MarkerDef[] = []
+  tops.forEach((top, i) => {
+    const angle = (i / Math.max(1, tops.length)) * 2 * Math.PI - Math.PI / 2
+    const x = 50 + 30 * Math.cos(angle)
+    const y = 50 + 30 * Math.sin(angle)
+    out.push({ id: top.id, name: top.name, type: top.type, x, y, level: 0 })
+    const kids = childrenOf(top.id)
+    kids.forEach((k, j) => {
+      const ka = (j / Math.max(1, kids.length)) * 2 * Math.PI
+      out.push({ id: k.id, name: k.name, type: k.type, x: x + 14 * Math.cos(ka), y: y + 14 * Math.sin(ka), level: 1 })
+      // grandchildren
+      const gk = childrenOf(k.id)
+      gk.forEach((g, gi) => {
+        const ga = (gi / Math.max(1, gk.length)) * 2 * Math.PI
+        out.push({ id: g.id, name: g.name, type: g.type, x: x + 14 * Math.cos(ka) + 7 * Math.cos(ga), y: y + 14 * Math.sin(ka) + 7 * Math.sin(ga), level: 2 })
+      })
+    })
+  })
+  return out
 }
 
-function Marker({ cls, label }: { cls: string; label: string }) {
-  return <span className={'marker ' + cls}><i><MapPin size={12} fill="currentColor" /></i><strong>{label}</strong></span>
+const TYPE_COLOR: Record<string, string> = {
+  '城市': '#415254', '区域': '#55768a', '街区': '#74806b', '建筑': '#9a6853',
+  '渡口': '#6d5360', '地域': '#3b5840', '关隘': '#a67538',
+}
+
+export function MapsPage({ workspace }: { workspace: Workspace }) {
+  const locations = workspace.locations
+  const [selected, setSelected] = useState<Location | null>(null)
+  const markers = layoutMarkers(locations)
+
+  return <div className="maps-page">
+    <aside className="entity-pane">
+      <div className="pane-title"><div><label>空间可视化</label><strong>地图</strong></div></div>
+      <div className="map-loc-list">
+        {locations.map(loc => (
+          <button key={loc.id} className={'map-list-item' + (selected?.id === loc.id ? ' active' : '')}
+            onClick={() => setSelected(loc)}>
+            <span style={{ color: TYPE_COLOR[loc.type] || '#666' }}><MapPin size={15} /></span>
+            <div><strong>{loc.name}</strong><small>{loc.type || '地点'} · {locations.filter(l => l.parent_location_id === loc.id).length} 下级</small></div>
+            <ChevronRight size={13} />
+          </button>
+        ))}
+        {locations.length === 0 && <div style={{ padding: 20, color: '#999', fontSize: 11 }}>还没有地点数据，先去地点模块创建。</div>}
+      </div>
+    </aside>
+    <section className="map-main">
+      <div className="map-head">
+        <div><label>空间关系图</label><strong>{workspace.novel.title} · {locations.length} 个地点</strong></div>
+        <Button><Maximize2 size={13} />适应画布</Button>
+      </div>
+      <div className="map-body">
+        <div className="canvas-wrap">
+          <div className="floating-tools">
+            <button className="active"><MousePointer2 size={14} />选择</button>
+            <button><MapPin size={14} />标记</button>
+            <button><Move size={14} />路线</button>
+            <i />
+            <button><Maximize2 size={14} /></button>
+          </div>
+          {/* 地图画布：标记自动按层级环形布局 */}
+          <div className="visual-map">
+            {markers.map(m => (
+              <span key={m.id} className={'marker' + (m.level === 0 ? ' top' : m.level === 2 ? ' leaf' : '') + (selected?.id === m.id ? ' active' : '')}
+                style={{ left: m.x + '%', top: m.y + '%', '--mc': TYPE_COLOR[m.type] || '#666' } as React.CSSProperties}
+                onClick={() => setSelected(locations.find(l => l.id === m.id) ?? null)}
+                title={m.name}>
+                <i><MapPin size={m.level === 0 ? 16 : 12} fill="currentColor" /></i>
+                <strong>{m.name}</strong>
+              </span>
+            ))}
+            {markers.length === 0 && <div className="map-empty"><MapIcon size={32} /><p>暂无地点数据</p></div>}
+          </div>
+        </div>
+      </div>
+      {/* 选中地点的详情面板 */}
+      {selected && (
+        <div className="map-detail">
+          <div className="map-detail-head">
+            <span style={{ background: TYPE_COLOR[selected.type] || '#666' }}><MapPin size={18} /></span>
+            <div><label>{selected.type || '地点'}</label><h3>{selected.name}</h3></div>
+            <button className="icon-button" onClick={() => setSelected(null)}>×</button>
+          </div>
+          <p>{selected.description || '暂无描述'}</p>
+          {selected.parent_location_id && <small>上级：{locations.find(l => l.id === selected.parent_location_id)?.name ?? '—'}</small>}
+          <div className="map-detail-kids">
+            {locations.filter(l => l.parent_location_id === selected.id).map(k => (
+              <button key={k.id} onClick={() => setSelected(k)}><MapPin size={11} />{k.name}</button>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  </div>
 }
 
 export function LibraryPage() {
-  const items: [string, string, string, string, ElementType][] = [['《故事》', '罗伯特·麦基', '写作技法', '关于场景转折与价值变化的笔记', BookMarked], ['江南城镇建筑资料', '本地 TXT 导入', '世界观素材', '水巷、石桥、沿街建筑的结构参考', FileText], ['雨夜叙事的空间感', '个人笔记', '氛围描写', '雨声、灯光与视线受阻的写法整理', Archive]]
-  return <div className="library-page"><aside><div className="library-brand"><LibraryBig size={20} /><span><strong>参考资料库</strong><small>预览模式</small></span></div><nav><button className="active"><LibraryBig size={15} />全部资料<i>38</i></button><button><BookMarked size={15} />书籍<i>12</i></button><button><FileText size={15} />文本摘录<i>18</i></button><button><Archive size={15} />个人笔记<i>8</i></button></nav><button className="import-card"><Upload size={17} /><span><strong>导入 TXT 资料</strong><small>单个文件不超过 2MB</small></span></button></aside><section><PageHeader eyebrow="本地知识库" title="全部资料" desc="这些内容可以作为 AI 生成时的可选参考。" actions={<Button kind="primary"><Plus size={14} />添加资料</Button>} /><div className="library-toolbar"><SearchBox text="搜索标题、作者、摘要或正文…" /><Button>最近更新<ChevronDown size={12} /></Button></div>{items.map(x => { const Icon = x[4]; return <article className="source-row" key={x[0]}><span><Icon size={18} /></span><div><h3>{x[0]} <em>{x[2]}</em></h3><p>{x[3]}</p><small>{x[1]} · 预览数据</small></div><Button kind="ghost"><Plus size={13} />加入 AI 参考</Button><button><MoreHorizontal size={15} /></button></article> })}</section></div>
+  return <div className="library-page"><PageHeader eyebrow="本地知识库" title="参考资料库" desc="这些内容可以作为 AI 生成时的可选参考。" actions={<Button kind="primary"><Plus size={14} />添加资料</Button>} />
+    <div className="library-empty"><Sparkles size={28} /><h3>资料库即将上线</h3><p>支持导入 TXT 资料、书籍笔记，作为 AI 续写的参考素材。</p></div>
+  </div>
 }

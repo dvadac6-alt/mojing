@@ -63,3 +63,28 @@ def import_env_config(database: Session) -> bool:
         database.add(cfg)
     database.commit()
     return True
+
+
+def export_env_config(database: Session) -> dict:
+    """Write the active AI config (with the DECRYPTED key) to .env so the user
+    has one visible place holding the full credentials. The cleartext key is
+    only ever handled server-side here — it never travels to the browser."""
+    from .security import decrypt_key
+    cfg = database.scalar(select(AIConfig).where(AIConfig.is_active.is_(True)))
+    if not cfg:
+        cfg = database.scalar(select(AIConfig).order_by(AIConfig.id.desc()).limit(1))
+    if not cfg:
+        return {"ok": False, "detail": "没有可导出的 AI 配置"}
+    plain_key = decrypt_key(cfg.api_key) if cfg.api_key else ""
+    lines = [
+        "# 墨境 AI 配置（由设置页「同步到 .env」导出）",
+        f"MOJING_AI_PROVIDER={cfg.provider}",
+        f"MOJING_AI_BASE_URL={cfg.base_url}",
+        f"MOJING_AI_MODEL={cfg.model}",
+        f"MOJING_AI_API_KEY={plain_key}",
+    ]
+    if cfg.name:
+        lines.append(f"MOJING_AI_NAME={cfg.name}")
+    ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"ok": True, "detail": f"已写入 {ENV_FILE}", "path": str(ENV_FILE)}

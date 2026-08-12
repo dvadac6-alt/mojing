@@ -44,15 +44,15 @@ class OpenAICompatProvider:
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
+        # Minimal payload: some OpenAI-compatible proxies (e.g. OpenCode Go's
+        # "Console Go" gateway) reject fields they don't understand with cryptic
+        # errors like "Invalid n value". Only send the universally-honored fields.
         payload = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": True,
-            # Ask the provider to emit a final chunk carrying token usage so we
-            # can account for cost. Most OpenAI-compatible servers honor this.
-            "stream_options": {"include_usage": True},
         }
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
@@ -70,7 +70,7 @@ class OpenAICompatProvider:
                         chunk = json.loads(data)
                     except json.JSONDecodeError:
                         continue
-                    # The usage object rides on a final chunk (choices == []).
+                    # Usage may arrive on a final chunk even without stream_options.
                     usage = chunk.get("usage")
                     if usage:
                         self.last_usage = {

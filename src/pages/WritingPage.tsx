@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Bot, BrainCircuit, Check, ChevronLeft, ChevronRight, Database, Feather, GripVertical,
   History, PanelRightClose, Plus, Save, ShieldCheck, Sparkles, Square,
@@ -110,6 +110,71 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
   const manuscriptRef = useRef<HTMLTextAreaElement>(null)
   const headingMeasureRef = useRef<HTMLDivElement>(null)
 
+  // ---- 右键 AI 补写（直接写入原文 + 背景层绿/红着色）----
+  type Highlight = { start: number; end: number; type: 'add' | 'del' }
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; insertPos: number; selStart: number; selEnd: number } | null>(null)
+  const [highlights, setHighlights] = useState<Highlight[]>([])
+  const [aiPhase, setAiPhase] = useState<'idle' | 'connecting' | 'streaming'>('idle')
+  const aiAbort = useRef<AbortController | null>(null)
+
+  const onContextMenu = (e: React.MouseEvent<HTMLTextAreaElement>) => {
+    e.preventDefault()
+    const ta = e.currentTarget
+    setCtxMenu({ x: e.clientX, y: e.clientY, insertPos: ta.selectionStart, selStart: ta.selectionStart, selEnd: ta.selectionEnd })
+  }
+
+  const startInlineGenerate = async (insertPos: number, selStart: number, selEnd: number) => {
+    setCtxMenu(null)
+    const hasSelection = selEnd > selStart
+    // 取光标前最多 600 字（或选中文字本身）作为续写上下文。
+    const contextBefore = hasSelection ? draft.slice(selStart, selEnd) : draft.slice(Math.max(0, insertPos - 600), insertPos)
+    const instruction = hasSelection
+      ? `请改写以下文字，保持情节但优化表达，约 ${Math.max(contextBefore.length, 200)} 字。只输出改写后的正文，不要解释。\n\n--- 原文 ---\n${contextBefore}`
+      : (contextBefore.trim()
+        ? `请从以下内容的结尾处自然续写，保持文风与语气一致，约 300 字。只输出续写正文，不要解释。\n\n--- 前文 ---\n${contextBefore}`
+        : '请从章节开头自然开始续写，约 300 字。只输出正文。')
+    setAiPhase('connecting')
+    setHighlights([])
+    const controller = new AbortController()
+    aiAbort.current = controller
+    // 写入的起始 offset（用于 highlight 区间追踪）。
+    const writeStart = hasSelection ? selStart : insertPos
+    // 如果是改写，先删掉选中的原文（一次性），之后只追加 AI 内容。
+    if (hasSelection) {
+      setDraft(d => d.slice(0, selStart) + d.slice(selEnd))
+    }
+    // aiEnd 追踪 AI 内容在 draft 中的当前末尾位置。
+    // 每个 chunk 只追加 delta（新增的字），绝不重写已有内容——否则会指数级重复。
+    let aiEnd = writeStart
+    try {
+      for await (const piece of streamAI('/ai/generate', {
+        novel_id: workspace.novel.id, chapter_id: activeChapter?.id, instruction,
+        mode: 'continue', target_words: hasSelection ? Math.max(contextBefore.length, 200) : 300,
+        context: { characters: true, locations: false, settings: true, threads: true, recent_chapters: 1 },
+      }, controller.signal)) {
+        const delta = piece.text
+        const insertAt = aiEnd
+        setDraft(d => d.slice(0, insertAt) + delta + d.slice(insertAt))
+        aiEnd += delta.length
+        setHighlights([{ start: writeStart, end: aiEnd, type: 'add' }])
+        setAiPhase('streaming')
+      }
+      setAiPhase('idle')
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') setHighlights([])
+      setAiPhase('idle')
+    } finally { aiAbort.current = null }
+  }
+
+  // Close the context menu on any outside click.
+  useEffect(() => {
+    if (!ctxMenu) return
+    const close = () => setCtxMenu(null)
+    window.addEventListener('click', close)
+    window.addEventListener('scroll', close, true)
+    return () => { window.removeEventListener('click', close); window.removeEventListener('scroll', close, true) }
+  }, [ctxMenu])
+
   // The workspace only carries chapter summaries now; fetch the full body of
   // the active chapter on demand (the rest of the list stays light).
   useEffect(() => {
@@ -151,21 +216,24 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
   const currentPageIndex = Math.min(pageIndex, pages.length - 1)
   const currentPage = pages[currentPageIndex]
 
-  useLayoutEffect(() => {
+  // Debounced pagination: re-measure 300ms after draft stops changing, so rapid
+  // typing / streaming AI output doesn't trigger the height-binary-search on
+  // every keystroke (which janks the editor).
+  useEffect(() => {
     const paper = paperRef.current
     const manuscript = manuscriptRef.current
     const heading = headingMeasureRef.current
     if (!paper || !manuscript || !heading || !manuscript.clientWidth) return
-
-    const paperStyle = window.getComputedStyle(paper)
-    const verticalBorder = parseFloat(paperStyle.borderTopWidth) + parseFloat(paperStyle.borderBottomWidth)
-    const verticalPadding = parseFloat(paperStyle.paddingTop) + parseFloat(paperStyle.paddingBottom)
-    const pageHeight = Math.max(1, paper.clientHeight - verticalBorder - verticalPadding)
-    const firstPageHeight = Math.max(1, pageHeight - heading.getBoundingClientRect().height)
-    const measuredPages = paginateByHeight(draft, manuscript, firstPageHeight, pageHeight)
-
-    setPagination({ content: draft, pages: measuredPages })
-    setPageIndex(index => Math.min(index, measuredPages.length - 1))
+    const timer = setTimeout(() => {
+      const paperStyle = window.getComputedStyle(paper)
+      const verticalBorder = parseFloat(paperStyle.borderTopWidth) + parseFloat(paperStyle.borderBottomWidth)
+      const verticalPadding = parseFloat(paperStyle.paddingTop) + parseFloat(paperStyle.paddingBottom)
+      const pageHeight = Math.max(1, paper.clientHeight - verticalBorder - verticalPadding)
+      const firstPageHeight = Math.max(1, pageHeight - heading.getBoundingClientRect().height)
+      const measuredPages = paginateByHeight(draft, manuscript, firstPageHeight, pageHeight)
+      setPagination({ content: draft, pages: measuredPages })
+      setPageIndex(index => Math.min(index, measuredPages.length - 1))
+    }, 300)
     const refresh = () => {
       const currentPaper = paperRef.current
       const currentManuscript = manuscriptRef.current
@@ -181,7 +249,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
       setPageIndex(index => Math.min(index, nextPages.length - 1))
     }
     window.addEventListener('resize', refresh)
-    return () => window.removeEventListener('resize', refresh)
+    return () => { clearTimeout(timer); window.removeEventListener('resize', refresh) }
   }, [draft, activeId, assistant])
 
   const persistChapter = useCallback(async (chapterId = activeId, title = draftTitle, content = draft) => {
@@ -256,6 +324,37 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
 
   const paragraphs = draft.trim() ? draft.split(/\n\s*\n/).length : 0
   const readingMinutes = Math.max(1, Math.ceil(activeChapter.word_count / 450))
+
+  /** 渲染背景着色层：把当前页文本按 highlight 区间分成段，AI 新增绿色、删除红色。
+   *  highlights 的 offset 是相对于 draft 全文的，这里映射到当前页的局部 offset。 */
+  const renderBackdrop = () => {
+    const pageStart = currentPage.start
+    const pageEnd = currentPage.end
+    const text = currentPage.text
+    if (!highlights.length) return text
+    // 求每个 highlight 与当前页 [pageStart, pageEnd) 的交集，转为页内 offset。
+    type Span = { s: number; e: number; type: 'add' | 'del' }
+    const spans: Span[] = []
+    for (const h of highlights) {
+      const s = Math.max(h.start, pageStart) - pageStart
+      const e = Math.min(h.end, pageEnd) - pageStart
+      if (s < e) spans.push({ s, e, type: h.type })
+    }
+    if (!spans.length) return text
+    spans.sort((a, b) => a.s - b.s)
+    // 按区间切分文本，渲染 colored spans。
+    const out: React.ReactNode[] = []
+    let cursor = 0
+    for (let i = 0; i < spans.length; i++) {
+      const sp = spans[i]
+      if (sp.s > cursor) out.push(<span key={`t${i}`}>{text.slice(cursor, sp.s)}</span>)
+      out.push(<span key={`h${i}`} className={'ai-' + sp.type}>{text.slice(sp.s, sp.e)}</span>)
+      cursor = sp.e
+    }
+    if (cursor < text.length) out.push(<span key="tail">{text.slice(cursor)}</span>)
+    return out
+  }
+
   return <div className="writing-page">
     <aside className="chapters-pane"><div className="pane-title"><div><label>{workspace.novel.title}</label><strong>章节目录</strong></div><button onClick={createChapter}><Plus size={16} /></button></div><SearchBox text="搜索章节或正文" />
       <div className="chapter-list">{workspace.chapters.map(chapter => <button className={chapter.id === activeId ? 'active' : ''} key={chapter.id} onClick={() => void selectChapter(chapter)}><GripVertical size={13} /><b>{String(chapter.order).padStart(2, '0')}</b><span><strong>{chapter.title}</strong><small>{fmt(chapter.word_count)} 字</small></span>{chapter.status === 'completed' && <Check size={12} />}</button>)}</div>
@@ -271,9 +370,26 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
     </div>
        <div className="paper-wrap"><article ref={paperRef} className="paper editable-paper">
          {currentPageIndex === 0 && <div className="page-heading"><label>第 {activeChapter.order} 章</label><input className="chapter-title-input" value={draftTitle} onChange={e => setDraftTitle(e.target.value)} aria-label="章节标题" /><div className="ornament"><i /><Feather size={14} /><i /></div></div>}
-         <textarea ref={manuscriptRef} className="manuscript-textarea" value={currentPage.text} onChange={e => setDraft(current => current.slice(0, currentPage.start) + e.target.value + current.slice(currentPage.end))} aria-label={`章节正文第 ${currentPageIndex + 1} 页`} placeholder={loadingContent ? '正在读取本章内容…' : '从这里开始写作……'} spellCheck={false} disabled={loadingContent} />
+         <div className="manuscript-stage">
+           {/* 背景着色层：与 textarea 同步，渲染 AI 新增（绿）/删除（红）标记 */}
+           <div className="manuscript-backdrop" aria-hidden="true">{renderBackdrop()}</div>
+           <textarea ref={manuscriptRef} className="manuscript-textarea" value={currentPage.text} onChange={e => { setHighlights([]); setDraft(current => current.slice(0, currentPage.start) + e.target.value + current.slice(currentPage.end)) }} onContextMenu={onContextMenu} aria-label={`章节正文第 ${currentPageIndex + 1} 页`} placeholder={loadingContent ? '正在读取本章内容…' : '从这里开始写作……（右键空白处可 AI 补写）'} spellCheck={false} disabled={loadingContent} />
+         </div>
          <div ref={headingMeasureRef} className="page-heading page-heading-measure" aria-hidden="true"><label>第 {activeChapter.order} 章</label><input className="chapter-title-input" value={draftTitle} readOnly tabIndex={-1} /><div className="ornament"><i /><Feather size={14} /><i /></div></div>
        </article></div>
+       {ctxMenu && (
+         <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} onClick={e => e.stopPropagation()}>
+           <button onClick={() => void startInlineGenerate(ctxMenu.insertPos, ctxMenu.selStart, ctxMenu.selEnd)}>
+             <Sparkles size={13} />{ctxMenu.selEnd > ctxMenu.selStart ? 'AI 改写选中' : 'AI 补写此处'}
+           </button>
+         </div>
+       )}
+       {aiPhase !== 'idle' && (
+         <div className="ai-inline-status">
+           <Sparkles size={13} />{aiPhase === 'connecting' ? '正在连接模型…' : 'AI 生成中（绿色为新增）'}
+           <button onClick={() => aiAbort.current?.abort()}><Square size={11} />停止</button>
+         </div>
+       )}
        <nav className="page-navigation" aria-label="章节分页">
          <button onClick={() => setPageIndex(index => Math.max(0, index - 1))} disabled={currentPageIndex === 0}><ChevronLeft size={14} />上一页</button>
          <span>第 <b>{currentPageIndex + 1}</b> / {pages.length} 页</span>

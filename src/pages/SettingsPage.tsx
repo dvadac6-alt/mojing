@@ -41,10 +41,13 @@ function AISection({ onSaved }: { onSaved: () => Promise<void> }) {
   const setActive = async (cfg: AIConfig) => { await workspaceApi.updateAIConfig(cfg.id, { is_active: true }); await load(); await onSaved() }
   const remove = async (cfg: AIConfig) => { if (confirm('删除此模型配置？')) { await workspaceApi.deleteAIConfig(cfg.id); await load() } }
   return <Scroll>
-    <PageHeader eyebrow="AI 调度" title="AI 模型" desc="配置 OpenAI 兼容的模型（GPT / DeepSeek / Claude 兼容端点）。未配置时将自动使用本地离线生成。" actions={<Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />添加模型</Button>} />
+    <PageHeader eyebrow="AI 调度" title="AI 模型" desc="配置 OpenAI 兼容的模型（GPT / DeepSeek / Claude 兼容端点）。未配置时将自动使用本地离线生成。" actions={<>
+      <Button onClick={async () => { try { const r = await workspaceApi.exportAIEnv(); alert(r.ok ? `已同步到 ${r.path}` : r.detail) } catch (e) { alert('同步失败：' + (e instanceof Error ? e.message : '')) } }}><Download size={14} />同步到 .env</Button>
+      <Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />添加模型</Button>
+    </>} />
     <div style={{ maxWidth: 720, margin: '0 auto 18px', padding: '12px 14px', border: '1px solid #e2dfd6', borderRadius: 9, background: '#fffefa', fontSize: 11, color: '#6b6f6b' }}>
       <ShieldCheck size={14} style={{ verticalAlign: -2, marginRight: 6, color: '#6e7e74' }} />
-      {meta?.offline_fallback && '已启用离线兜底：未配置可用密钥时，AI 面板仍可生成示例草稿。'} API Key 加密存储于本地，永不下发至前端。
+      {meta?.offline_fallback && '已启用离线兜底：未配置可用密钥时，AI 面板仍可生成示例草稿。'} API Key 加密存储于本地，永不下发至前端。点「同步到 .env」可把当前配置（含 Key 明文）写入项目根目录的 .env 文件，方便备份与查看。
     </div>
     <div style={{ maxWidth: 720, margin: '0 auto' }} className="settings-config-list">
       {loading && <p style={{ color: '#999', fontSize: 11 }}>读取配置…</p>}
@@ -78,6 +81,9 @@ function AIConfigForm({ initial, onClose, onSaved }: { initial?: AIConfig; onClo
   // Model list fetched from the provider (with context windows) for the picker.
   const [models, setModels] = useState<{ id: string; context_length: number | null }[] | null>(null)
   const [manualModel, setManualModel] = useState(false)
+  // Multi-select: when adding (not editing) the user can tick several models and
+  // they are all created in one go, each as its own switchable config.
+  const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set())
   const [contextLength, setContextLength] = useState<number | null>(initial?.context_length ?? null)
   // Which preset template filled the form (purely a form convenience).
   const [preset, setPreset] = useState('custom')
@@ -91,14 +97,22 @@ function AIConfigForm({ initial, onClose, onSaved }: { initial?: AIConfig; onClo
     setModel(p.model)
     setModels(null)
     setManualModel(false)
+    setSelectedModels(new Set())
   }
   const submit = () => run(async () => {
-    const data: Record<string, unknown> = { name: name.trim() || '默认模型', provider, model, base_url: baseUrl, temperature: Number(temperature) || 0.85, max_tokens: Number(maxTokens) || 1200, is_active: isActive }
-    // Model context comes from the provider's /models metadata; null = unknown.
-    data.context_length = contextLength
-    // Only send the key when the user typed something — otherwise it's left
-    // untouched on the server (api_key omitted => no change).
-    if (apiKey !== '') data.api_key = apiKey
+    // Batch create: multiple models ticked in the picker (add flow only).
+    const batch = (!initial && models && !manualModel && selectedModels.size > 0) ? [...selectedModels] : null
+    const base: Record<string, unknown> = { provider, base_url: baseUrl, temperature: Number(temperature) || 0.85, max_tokens: Number(maxTokens) || 1200, is_active: isActive }
+    if (apiKey !== '') base.api_key = apiKey
+    if (batch) {
+      for (const mid of batch) {
+        const m = models?.find(x => x.id === mid)
+        await workspaceApi.createAIConfig({ ...base, name: mid, model: mid, context_length: m?.context_length ?? null, api_key: apiKey })
+      }
+      onSaved()
+      return
+    }
+    const data: Record<string, unknown> = { ...base, name: name.trim() || '默认模型', model, context_length: contextLength }
     if (initial) await workspaceApi.updateAIConfig(initial.id, data); else await workspaceApi.createAIConfig({ ...data, api_key: apiKey })
     onSaved()
   })
@@ -110,6 +124,7 @@ function AIConfigForm({ initial, onClose, onSaved }: { initial?: AIConfig; onClo
       if (!res.ok) { setTestResult(res.detail); setModels(null); return }
       setModels(res.models ?? [])
       setManualModel(false)
+      setSelectedModels(new Set())
       const current = res.models?.find(m => m.id === model)
       if (current) setContextLength(current.context_length)
       setTestResult(res.detail)
@@ -120,6 +135,17 @@ function AIConfigForm({ initial, onClose, onSaved }: { initial?: AIConfig; onClo
     const m = models?.find(x => x.id === id)
     setContextLength(m?.context_length ?? null)
   }
+  const toggleSelected = (id: string) => {
+    setSelectedModels(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      // Keep the single `model` field in sync with the last-toggled for display.
+      setModel(id)
+      const m = models?.find(x => x.id === id)
+      setContextLength(m?.context_length ?? null)
+      return next
+    })
+  }
   const fmtContext = (n: number | null) => n ? (n >= 1000 ? `${(n / 1000).toFixed(n % 1000 ? 1 : 0)}K` : String(n)) : null
   const keyPlaceholder = initial?.has_key ? `已保存（${initial.key_hint}），留空保持不变` : 'sk-…'
   return <Modal eyebrow={initial ? '编辑模型' : '添加模型'} title={name || '新模型'} icon={Bot} onClose={onClose}
@@ -127,27 +153,51 @@ function AIConfigForm({ initial, onClose, onSaved }: { initial?: AIConfig; onClo
     <div className="form-body">
       <Field label="服务商预设（自动填写地址与模型，可再修改）">
         <div className="segments">
-          <button className={preset === 'custom' ? 'active' : ''} onClick={() => setPreset('custom')}>自定义</button>
-          <button className={preset === 'opencode' ? 'active' : ''} onClick={() => applyPreset({ key: 'opencode', label: 'OpenCode Zen', provider: 'opencode', base_url: 'https://opencode.ai/zen/go/v1', model: 'opencode/deepseek-v4-flash' })}>OpenCode Zen</button>
+          <button className={preset === 'custom' ? 'active' : ''} onClick={() => { setPreset('custom'); setName('自定义模型'); setProvider('openai'); setBaseUrl(''); setModel(''); setModels(null); setManualModel(false); setSelectedModels(new Set()) }}>自定义 API</button>
+          <button className={preset === 'opencode' ? 'active' : ''} onClick={() => applyPreset({ key: 'opencode', label: 'OpenCode Go', provider: 'opencode', base_url: 'https://opencode.ai/zen/go/v1', model: 'opencode/deepseek-v4-flash' })}>OpenCode Go</button>
           <button className={preset === 'openai' ? 'active' : ''} onClick={() => applyPreset({ key: 'openai', label: 'OpenAI', provider: 'openai', base_url: 'https://api.openai.com/v1', model: 'gpt-4o-mini' })}>OpenAI</button>
           <button className={preset === 'deepseek' ? 'active' : ''} onClick={() => applyPreset({ key: 'deepseek', label: 'DeepSeek', provider: 'deepseek', base_url: 'https://api.deepseek.com/v1', model: 'deepseek-chat' })}>DeepSeek</button>
         </div>
       </Field>
-      <div className="form-row"><Field label="显示名称"><input className={inputCls} value={name} onChange={e => setName(e.target.value)} autoFocus /></Field><Field label="Provider"><select className={selectCls} value={provider} onChange={e => setProvider(e.target.value)}><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="opencode">OpenCode Zen</option><option value="claude">Claude (兼容)</option></select></Field></div>
+      <div className="form-row"><Field label="显示名称"><input className={inputCls} value={name} onChange={e => setName(e.target.value)} autoFocus /></Field><Field label="Provider"><select className={selectCls} value={provider} onChange={e => setProvider(e.target.value)}><option value="openai">OpenAI 兼容</option><option value="deepseek">DeepSeek</option><option value="opencode">OpenCode Go</option><option value="claude">Claude (兼容)</option><option value="custom">自定义</option></select></Field></div>
       {models && !manualModel ? (
-        <Field label="模型 ID（来自平台列表）">
-          <div className="model-picker">
-            <select className={selectCls} value={model} onChange={e => pickModel(e.target.value)}>
-              {models.map(m => <option key={m.id} value={m.id}>{m.id}{fmtContext(m.context_length) ? ` · 上下文 ${fmtContext(m.context_length)}` : ''}</option>)}
-            </select>
-            <Button onClick={() => setManualModel(true)}>手动输入</Button>
-          </div>
-        </Field>
+        initial ? (
+          // 编辑现有配置：单选下拉
+          <Field label="模型 ID（来自平台列表）">
+            <div className="model-picker">
+              <select className={selectCls} value={model} onChange={e => pickModel(e.target.value)}>
+                {models.map(m => <option key={m.id} value={m.id}>{m.id}{fmtContext(m.context_length) ? ` · 上下文 ${fmtContext(m.context_length)}` : ''}</option>)}
+              </select>
+              <Button onClick={() => setManualModel(true)}>手动输入</Button>
+            </div>
+          </Field>
+        ) : (
+          // 新建：多选勾选，可一次批量创建多个模型配置
+          <Field label={`模型 ID（勾选要添加的，已选 ${selectedModels.size} 个）`}>
+            <div className="model-multi">
+              <div className="model-multi-list">
+                {models.map(m => (
+                  <label key={m.id} className={'model-multi-item' + (selectedModels.has(m.id) ? ' checked' : '')}>
+                    <input type="checkbox" checked={selectedModels.has(m.id)} onChange={() => toggleSelected(m.id)} />
+                    <span className="mm-id">{m.id}</span>
+                    {fmtContext(m.context_length) && <small>{fmtContext(m.context_length)}</small>}
+                  </label>
+                ))}
+              </div>
+              <div className="model-multi-actions">
+                <Button onClick={() => setSelectedModels(new Set(models.map(m => m.id)))}>全选</Button>
+                <Button onClick={() => setSelectedModels(new Set())}>清空</Button>
+                <Button onClick={() => setManualModel(true)}>手动输入单个</Button>
+              </div>
+            </div>
+          </Field>
+        )
       ) : (
         <Field label="模型 ID"><input className={inputCls} value={model} onChange={e => setModel(e.target.value)} placeholder="opencode/gpt-5.5 · opencode/deepseek-v4-flash · gpt-4o-mini · deepseek-chat" /></Field>
       )}
-      {contextLength ? <div className="model-context">该模型上下文窗口：<b>{fmtContext(contextLength)}</b> tokens（来自平台默认设置）</div> : null}
-      <Field label="Base URL（OpenAI 兼容）"><input className={inputCls} value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="https://opencode.ai/zen/go/v1" /></Field>
+      {!initial && models && !manualModel && selectedModels.size > 0 && <div className="model-context">将创建 <b>{selectedModels.size}</b> 个模型配置，保存后可在生成时切换。</div>}
+      {contextLength && (initial || selectedModels.size <= 1) && <div className="model-context">{selectedModels.size === 1 ? '选中模型' : '该模型'}上下文窗口：<b>{fmtContext(contextLength)}</b> tokens（来自平台默认设置）</div>}
+      <Field label="Base URL（填到 /v1，后端自动拼接 /chat/completions）"><input className={inputCls} value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="https://your-api.com/v1（标准 Chat Completions 格式）" /></Field>
       <Field label="API Key"><input className={inputCls} type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={keyPlaceholder} /></Field>
       <div className="ai-fetch-row"><Button onClick={fetchModels} disabled={testing || busy}><Bot size={13} />{testing ? '获取中…' : '测试并获取模型列表'}</Button><span>{testResult || '连接平台后自动拉取可用模型与上下文窗口'}</span></div>
       <div className="form-row"><Field label="Temperature"><input className={inputCls} type="number" step="0.05" value={temperature} onChange={e => setTemperature(e.target.value)} /></Field><Field label="Max tokens"><input className={inputCls} type="number" value={maxTokens} onChange={e => setMaxTokens(e.target.value)} /></Field></div>

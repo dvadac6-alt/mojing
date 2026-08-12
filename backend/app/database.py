@@ -158,9 +158,13 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 def _enable_foreign_keys(dbapi_connection, _connection_record):
     """SQLite ships with foreign keys OFF; the ORM cascade masks most cases but
     bypassing it (raw SQL / migrations) would leave orphans. Enforce at the DB
-    layer on every fresh connection."""
+    layer on every fresh connection. Also enable WAL mode for better concurrent
+    read/write performance (the backup job + AI usage writes can otherwise block
+    reads)."""
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.close()
 
 

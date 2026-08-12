@@ -93,7 +93,7 @@ export default function App() {
           {page === 'locations' && <LocationsPage workspace={workspace} reload={reload} />}
           {page === 'world' && <WorldPage workspace={workspace} reload={reload} />}
           {page === 'threads' && <ThreadsPage workspace={workspace} reload={reload} />}
-          {page === 'maps' && <MapsPage />}
+          {page === 'maps' && <MapsPage workspace={workspace} />}
           {page === 'library' && <LibraryPage />}
           {page === 'settings' && <SettingsPage workspace={workspace} reload={reload} />}
         </main>

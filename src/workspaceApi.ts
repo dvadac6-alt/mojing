@@ -376,6 +376,9 @@ const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  /** Export the active config (key decrypted server-side) into the .env file. */
+  exportAIEnv: () =>
+    request<{ ok: boolean; detail: string; path?: string }>(`/ai/export-env`, { method: 'POST' }),
   aiModels: () =>
     request<{ active: AIConfig | null; configs: AIConfig[]; provider: string; offline_fallback: boolean }>('/ai/models'),
   suggestThreads: (novelId: string) =>

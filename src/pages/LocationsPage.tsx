@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ChevronDown, MapPin, PenLine, Trash2 } from 'lucide-react'
-import { workspaceApi, type Location as Loc, type Workspace } from '../workspaceApi'
+import { workspaceApi, type Location as Loc, type StoryMap, type Workspace } from '../workspaceApi'
 import { Button, Detail, EmptyStateWrap, Field, Modal, PaneHead, SearchBox } from '../components/ui'
 import { areaCls, inputCls, selectCls } from '../lib/constants'
 import { useAsyncAction } from '../hooks/useAsyncAction'
@@ -60,10 +60,13 @@ function LocationForm({ novelId, locations, initial, onClose, onSaved }: { novel
   const [name, setName] = useState(initial?.name ?? '')
   const [type, setType] = useState(initial?.type ?? '')
   const [parent, setParent] = useState(initial?.parent_location_id ?? '')
+  const [mapId, setMapId] = useState(initial?.map_id ?? '')
+  const [maps, setMaps] = useState<StoryMap[]>([])
   const [description, setDescription] = useState(initial?.description ?? '')
   const { busy, error, run } = useAsyncAction()
+  useEffect(() => { workspaceApi.listMaps(novelId).then(setMaps).catch(() => {}) }, [novelId])
   const submit = () => run(async () => {
-    const data = { name: name.trim() || '未命名地点', type, description, parent_location_id: parent || null }
+    const data = { name: name.trim() || '未命名地点', type, description, parent_location_id: parent || null, map_id: mapId || null }
     if (initial) await workspaceApi.updateLocation(initial.id, data); else await workspaceApi.createLocation(novelId, data)
     onSaved()
   })
@@ -71,7 +74,10 @@ function LocationForm({ novelId, locations, initial, onClose, onSaved }: { novel
     footer={<div className="form-actions">{error && <span className="form-error">{error}</span>}<Button onClick={onClose}>取消</Button><Button kind="primary" onClick={submit} disabled={busy}>{busy ? '保存中…' : '保存'}</Button></div>}>
     <div className="form-body">
       <div className="form-row"><Field label="名称"><input className={inputCls} value={name} onChange={e => setName(e.target.value)} autoFocus /></Field><Field label="类型"><input className={inputCls} value={type} onChange={e => setType(e.target.value)} placeholder="城市 / 建筑 / 区域" /></Field></div>
-      <Field label="上级地点"><select className={selectCls} value={parent} onChange={e => setParent(e.target.value)}><option value="">（顶级地点）</option>{locations.filter(l => l.id !== initial?.id).map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select></Field>
+      <div className="form-row">
+        <Field label="上级地点"><select className={selectCls} value={parent} onChange={e => setParent(e.target.value)}><option value="">（顶级地点）</option>{locations.filter(l => l.id !== initial?.id).map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select></Field>
+        <Field label="所属地图"><select className={selectCls} value={mapId} onChange={e => setMapId(e.target.value)}><option value="">（未归属）</option>{maps.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Field>
+      </div>
       <Field label="描述"><textarea className={areaCls} value={description} onChange={e => setDescription(e.target.value)} /></Field>
     </div>
   </Modal>

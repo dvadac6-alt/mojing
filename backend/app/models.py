@@ -57,6 +57,9 @@ class Novel(Base):
     locations: Mapped[list["Location"]] = relationship(
         back_populates="novel", cascade="all, delete-orphan", order_by="Location.created_at"
     )
+    maps: Mapped[list["StoryMap"]] = relationship(
+        back_populates="novel", cascade="all, delete-orphan", order_by="StoryMap.created_at"
+    )
     world_settings: Mapped[list["WorldSetting"]] = relationship(
         back_populates="novel", cascade="all, delete-orphan", order_by="WorldSetting.created_at"
     )
@@ -174,6 +177,7 @@ class Location(Base):
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     type: Mapped[str] = mapped_column(String(50), default="", nullable=False)
     parent_location_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("locations.id", ondelete="SET NULL"), nullable=True)
+    map_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("story_maps.id", ondelete="SET NULL"), nullable=True)
     first_appearance_chapter_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True
     )
@@ -181,12 +185,51 @@ class Location(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     novel: Mapped[Novel] = relationship(back_populates="locations")
+    story_map: Mapped["StoryMap | None"] = relationship(back_populates="locations")
     children: Mapped[list["Location"]] = relationship(
         back_populates="parent", cascade="all, delete-orphan"
     )
     parent: Mapped["Location | None"] = relationship(
         back_populates="children", remote_side="Location.id", foreign_keys=[parent_location_id]
     )
+
+
+class StoryMap(Base):
+    """A map canvas inside a novel — different maps are different realms/areas
+    (e.g. 凡界 / 灵界 after a xianxia ascension). Each map owns its terrains
+    (named colors) and the free-hand doodle strokes drawn on its canvas."""
+
+    __tablename__ = "story_maps"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    novel_id: Mapped[str] = mapped_column(String(36), ForeignKey("novels.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # Stroke list: [{color, width, eraser, points: [[x%, y%], ...]}] — points are
+    # stored as percentages so the canvas stays proportional at any size.
+    doodles: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    novel: Mapped[Novel] = relationship(back_populates="maps")
+    terrains: Mapped[list["Terrain"]] = relationship(
+        back_populates="map", cascade="all, delete-orphan", order_by="Terrain.created_at"
+    )
+    locations: Mapped[list[Location]] = relationship(back_populates="story_map")
+
+
+class Terrain(Base):
+    """A named color used for doodling (绿色=草地, 紫色=沼泽, ...)."""
+
+    __tablename__ = "terrains"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    map_id: Mapped[str] = mapped_column(String(36), ForeignKey("story_maps.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String(60), nullable=False)
+    color: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    map: Mapped[StoryMap] = relationship(back_populates="terrains")
 
 
 class WorldSetting(Base):

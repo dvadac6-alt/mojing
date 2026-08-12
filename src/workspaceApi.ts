@@ -64,9 +64,39 @@ export type Location = {
   description: string
   type: string
   parent_location_id: string | null
+  map_id: string | null
   first_appearance_chapter_id: string | null
   created_at: string
   updated_at: string
+}
+
+/** One free-hand stroke on a map canvas; points are 0-100 percentages. */
+export type Doodle = {
+  color: string
+  width: number
+  eraser?: boolean
+  points: [number, number][]
+}
+
+/** A map canvas inside a novel — different maps are different realms/areas
+ *  (凡界 / 灵界 after an ascension), each with its own doodles + terrains. */
+export type StoryMap = {
+  id: string
+  novel_id: string
+  name: string
+  description: string
+  doodles: Doodle[]
+  created_at: string
+  updated_at: string
+}
+
+/** A named doodle color acting as terrain (绿色=草地, 紫色=沼泽, ...). */
+export type Terrain = {
+  id: string
+  map_id: string
+  name: string
+  color: string
+  created_at: string
 }
 
 export type WorldSetting = {
@@ -323,6 +353,20 @@ const api = {
   updateLocation: (id: string, data: Partial<Location>) =>
     request<Location>(`/locations/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteLocation: (id: string) => request<void>(`/locations/${id}`, { method: 'DELETE' }),
+
+  // story maps (realms) + terrains (named doodle colors)
+  listMaps: (novelId: string) => request<StoryMap[]>(`/novels/${novelId}/maps`),
+  createMap: (novelId: string, data: Partial<StoryMap>) =>
+    request<StoryMap>(`/novels/${novelId}/maps`, { method: 'POST', body: JSON.stringify(data) }),
+  updateMap: (id: string, data: Partial<StoryMap>) =>
+    request<StoryMap>(`/maps/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteMap: (id: string) => request<void>(`/maps/${id}`, { method: 'DELETE' }),
+  listTerrains: (mapId: string) => request<Terrain[]>(`/maps/${mapId}/terrains`),
+  createTerrain: (mapId: string, data: Partial<Terrain>) =>
+    request<Terrain>(`/maps/${mapId}/terrains`, { method: 'POST', body: JSON.stringify(data) }),
+  updateTerrain: (id: string, data: Partial<Terrain>) =>
+    request<Terrain>(`/terrains/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteTerrain: (id: string) => request<void>(`/terrains/${id}`, { method: 'DELETE' }),
 
   // world settings
   listSettings: (novelId: string) => request<WorldSetting[]>(`/novels/${novelId}/settings`),

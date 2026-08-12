@@ -190,6 +190,7 @@ class LocationCreate(BaseModel):
     description: str = ""
     type: str = ""
     parent_location_id: str | None = None
+    map_id: str | None = None
     first_appearance_chapter_id: str | None = None
 
 
@@ -198,6 +199,7 @@ class LocationUpdate(BaseModel):
     description: str | None = None
     type: str | None = None
     parent_location_id: str | None = None
+    map_id: str | None = None
     first_appearance_chapter_id: str | None = None
 
 
@@ -208,9 +210,52 @@ class LocationResponse(OrmModel):
     description: str
     type: str
     parent_location_id: str | None = None
+    map_id: str | None = None
     first_appearance_chapter_id: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+# ---------- Story maps (multi-map / realms) ----------
+class StoryMapCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = ""
+    doodles: list[dict[str, Any]] = []
+
+
+class StoryMapUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = None
+    doodles: list[dict[str, Any]] | None = None
+
+
+class StoryMapResponse(OrmModel):
+    id: str
+    novel_id: str
+    name: str
+    description: str
+    doodles: list[dict[str, Any]] = []
+    created_at: datetime
+    updated_at: datetime
+
+
+# ---------- Terrains (named doodle colors) ----------
+class TerrainCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    color: str = Field(min_length=4, max_length=20)
+
+
+class TerrainUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    color: str | None = Field(default=None, min_length=4, max_length=20)
+
+
+class TerrainResponse(OrmModel):
+    id: str
+    map_id: str
+    name: str
+    color: str
+    created_at: datetime
 
 
 # ---------- WorldSetting ----------

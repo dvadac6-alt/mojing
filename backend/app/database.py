@@ -225,6 +225,7 @@ def _migrate_legacy_columns() -> None:
     additions = {
         "chapter_versions": [("label", "VARCHAR(40) DEFAULT 'auto' NOT NULL")],
         "ai_config": [("context_length", "INTEGER")],
+        "locations": [("map_id", "VARCHAR(36) REFERENCES story_maps(id) ON DELETE SET NULL")],
     }
     with engine.connect() as conn:
         for table, columns in additions.items():

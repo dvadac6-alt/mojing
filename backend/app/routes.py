@@ -22,6 +22,8 @@ from .models import (
     PlotThread,
     Scene,
     GraphEdge,
+    StoryMap,
+    Terrain,
     ThreadPriority,
     ThreadStatus,
     WorldSetting,
@@ -61,6 +63,12 @@ from .schemas import (
     SceneCreate,
     SceneSummary,
     SceneUpdate,
+    StoryMapCreate,
+    StoryMapResponse,
+    StoryMapUpdate,
+    TerrainCreate,
+    TerrainResponse,
+    TerrainUpdate,
     WorldSettingCreate,
     WorldSettingResponse,
     WorldSettingUpdate,
@@ -115,6 +123,14 @@ def _character(c: Character) -> CharacterResponse:
 
 def _location(l: Location) -> LocationResponse:
     return LocationResponse.model_validate(l)
+
+
+def _story_map(m: StoryMap) -> StoryMapResponse:
+    return StoryMapResponse.model_validate(m)
+
+
+def _terrain(t: Terrain) -> TerrainResponse:
+    return TerrainResponse.model_validate(t)
 
 
 def _setting(s: WorldSetting) -> WorldSettingResponse:
@@ -633,6 +649,86 @@ def delete_location(location_id: str, database: Session = Depends(get_db)):
     if not location:
         raise HTTPException(status_code=404, detail="Location not found")
     database.delete(location)
+    database.commit()
+
+
+# ---------------------------------------------------------------- story maps (realms)
+@router.get("/novels/{novel_id}/maps", response_model=list[StoryMapResponse])
+def list_maps(novel_id: str, database: Session = Depends(get_db)):
+    _get_novel(database, novel_id)
+    return [_story_map(m) for m in database.scalars(
+        select(StoryMap).where(StoryMap.novel_id == novel_id).order_by(StoryMap.created_at))]
+
+
+@router.post("/novels/{novel_id}/maps", response_model=StoryMapResponse, status_code=201)
+def create_map(novel_id: str, payload: StoryMapCreate, database: Session = Depends(get_db)):
+    _get_novel(database, novel_id)
+    story_map = StoryMap(novel_id=novel_id, **payload.model_dump())
+    database.add(story_map)
+    database.commit()
+    database.refresh(story_map)
+    return _story_map(story_map)
+
+
+@router.put("/maps/{map_id}", response_model=StoryMapResponse)
+def update_map(map_id: str, payload: StoryMapUpdate, database: Session = Depends(get_db)):
+    story_map = database.get(StoryMap, map_id)
+    if not story_map:
+        raise HTTPException(status_code=404, detail="Map not found")
+    for field, value in payload.model_dump(exclude_none=True).items():
+        setattr(story_map, field, value)
+    database.commit()
+    database.refresh(story_map)
+    return _story_map(story_map)
+
+
+@router.delete("/maps/{map_id}", status_code=204)
+def delete_map(map_id: str, database: Session = Depends(get_db)):
+    story_map = database.get(StoryMap, map_id)
+    if not story_map:
+        raise HTTPException(status_code=404, detail="Map not found")
+    database.delete(story_map)  # terrains cascade; locations keep map_id → NULL
+    database.commit()
+
+
+# ---------------------------------------------------------------- terrains (named colors)
+@router.get("/maps/{map_id}/terrains", response_model=list[TerrainResponse])
+def list_terrains(map_id: str, database: Session = Depends(get_db)):
+    if not database.get(StoryMap, map_id):
+        raise HTTPException(status_code=404, detail="Map not found")
+    return [_terrain(t) for t in database.scalars(
+        select(Terrain).where(Terrain.map_id == map_id).order_by(Terrain.created_at))]
+
+
+@router.post("/maps/{map_id}/terrains", response_model=TerrainResponse, status_code=201)
+def create_terrain(map_id: str, payload: TerrainCreate, database: Session = Depends(get_db)):
+    if not database.get(StoryMap, map_id):
+        raise HTTPException(status_code=404, detail="Map not found")
+    terrain = Terrain(map_id=map_id, **payload.model_dump())
+    database.add(terrain)
+    database.commit()
+    database.refresh(terrain)
+    return _terrain(terrain)
+
+
+@router.put("/terrains/{terrain_id}", response_model=TerrainResponse)
+def update_terrain(terrain_id: str, payload: TerrainUpdate, database: Session = Depends(get_db)):
+    terrain = database.get(Terrain, terrain_id)
+    if not terrain:
+        raise HTTPException(status_code=404, detail="Terrain not found")
+    for field, value in payload.model_dump(exclude_none=True).items():
+        setattr(terrain, field, value)
+    database.commit()
+    database.refresh(terrain)
+    return _terrain(terrain)
+
+
+@router.delete("/terrains/{terrain_id}", status_code=204)
+def delete_terrain(terrain_id: str, database: Session = Depends(get_db)):
+    terrain = database.get(Terrain, terrain_id)
+    if not terrain:
+        raise HTTPException(status_code=404, detail="Terrain not found")
+    database.delete(terrain)
     database.commit()
 
 

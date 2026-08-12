@@ -301,6 +301,20 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
     return () => window.clearTimeout(timer)
   }, [currentSignature, activeChapter?.id])
 
+  // Ctrl/Cmd+S → manual save. Writers reflexively hit this; intercepting the
+  // browser's "save webpage" dialog and showing "已保存" turns anxiety into
+  // confirmation. Auto-save still runs regardless.
+  useEffect(() => {
+    const onSave = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault()
+        if (activeId) void persistChapter()
+      }
+    }
+    window.addEventListener('keydown', onSave)
+    return () => window.removeEventListener('keydown', onSave)
+  }, [persistChapter, activeId])
+
   const selectChapter = async (chapter: ChapterSummary) => {
     if (chapter.id === activeId) return
     if (activeId && currentSignature !== savedSignature.current) await persistChapter()
@@ -373,7 +387,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
       <button onClick={deleteChapter} title="删除当前章节"><Trash2 size={15} /></button><button onClick={() => setVersionsOpen(true)} title="版本历史"><History size={15} /></button><i />
       <span>第 {String(activeChapter.order).padStart(2, '0')} 章 <ChevronRight size={12} /> <strong>{draftTitle || '未命名章节'}</strong></span><b />
       <em className={saveState}><Check size={12} />{loadingContent ? '正在加载…' : saveState === 'saving' ? '正在保存…' : saveState === 'error' ? '保存失败' : `已保存 ${savedAt}`}</em>
-      <button onClick={() => void persistChapter()}><Save size={14} />保存</button>
+      <button onClick={() => void persistChapter()}><Save size={14} />保存<kbd>⌘S</kbd></button>
       <button onClick={() => onGoto('threads')} title="伏笔看板"><BrainCircuit size={14} /></button>
       <button className={'assist-toggle ' + (assistant ? 'active' : '')} onClick={onAssistant}><WandSparkles size={14} />辅助中心</button>
     </div>
@@ -459,6 +473,21 @@ function QuickAI({ workspace, chapter, onAccept }: { workspace: Workspace; chapt
   const stop = () => { abortRef.current?.abort() }
   const accept = () => { if (output.trim()) { onAccept(output.trim()); setOutput('') } }
   const selectCls = 'form-select'
+
+  // Ctrl/Cmd+Enter → generate (the button already shows a ⌘↵ hint; wire it up
+  // for real so the keyboard shortcut the UI promises actually works).
+  const phaseRef = useRef(phase); phaseRef.current = phase
+  const generateRef = useRef(generate); generateRef.current = generate
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && phaseRef.current === 'idle') {
+        e.preventDefault()
+        void generateRef.current()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   return <div className="assist-body">
     <div className="assist-intro"><span><WandSparkles size={18} /></span><div><strong>接下来想怎么写？</strong><p>结合当前章节和作品资料生成草稿。</p></div></div>

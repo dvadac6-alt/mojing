@@ -1054,6 +1054,11 @@ kbd { font-family: inherit; font-size: 10px; line-height: 1; border: 1px solid c
 .empty-state span { width: 52px; height: 52px; display: grid; place-items: center; border-radius: 50%; background: #efece4; color: #aaa; }
 .empty-state h3 { margin: 0; font-family: "Noto Serif SC",serif; font-size: 14px; color: #747773; }
 .empty-state p { margin: 0; font-size: 11px; }
+/* Inline empty hint used inside panels/grids (a panel that has its header but
+   an empty body): grey centered one-liner, clickable when it doubles as a CTA. */
+.panel-empty { padding: 26px 16px; text-align: center; color: #a8a39a; font-size: 11px; line-height: 1.7; }
+.panel-empty.actionable { cursor: pointer; }
+.panel-empty.actionable:hover { color: #8a857c; }
 
 /* thread detail modal extras */
 .thread-meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; padding: 0 18px 12px; }

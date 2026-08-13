@@ -33,6 +33,7 @@ export function ProjectsPage({ onOpen, currentId }: { onOpen: (id: string) => vo
     <div className="project-grid">
       <button className="new-project" onClick={() => setCreating(true)}><span><FilePlus2 size={23} /></span><strong>创建一部新小说</strong><small>从一个名字和想法开始</small></button>
       {loading && novels.length === 0 && <p style={{ color: '#999', fontSize: 11 }}>正在读取本地作品…</p>}
+      {!loading && novels.length === 0 && <div className="panel-empty" style={{ gridColumn: '1 / -1' }}>还没有作品——在左侧填写书名与类型，开始你的第一部小说。所有内容只存在这台电脑，无需联网。</div>}
       {filtered.map((n, i) => {
         const progress = n.target_words > 0 ? Math.min(100, Math.round((n.total_words / n.target_words) * 100)) : 0
         const tone = COVER_TONES[i % COVER_TONES.length]

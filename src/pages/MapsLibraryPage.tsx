@@ -495,7 +495,7 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
 }
 
 export function LibraryPage() {
-  return <div className="library-page"><PageHeader eyebrow="本地知识库" title="参考资料库" desc="这些内容可以作为 AI 生成时的可选参考。" actions={<Button kind="primary"><Plus size={14} />添加资料</Button>} />
+  return <div className="library-page"><PageHeader eyebrow="本地知识库" title="参考资料库" desc="这些内容可以作为 AI 生成时的可选参考。" actions={<Button kind="primary" disabled><Plus size={14} />添加资料</Button>} />
     <div className="library-empty"><Sparkles size={28} /><h3>资料库即将上线</h3><p>支持导入 TXT 资料、书籍笔记，作为 AI 续写的参考素材。</p></div>
   </div>
 }

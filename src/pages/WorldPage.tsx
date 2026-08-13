@@ -39,7 +39,9 @@ export function WorldPage({ workspace, reload }: { workspace: Workspace; reload:
     <Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />新建设定</Button>
   </>} />
     <div className="world-toolbar"><SearchBox text="搜索设定…" value={query} onChange={setQuery} /><div className="chips">{categories.map(c => <button key={c} className={filter === c ? 'active' : ''} onClick={() => setFilter(c)}>{c} {c !== '全部' && settings.filter(s => s.category === c).length}</button>)}</div></div>
-    <div className="world-grid">{filtered.map(s => <article key={s.id} onClick={() => setEditing(s)} style={{ cursor: 'pointer' }}><span className={CATEGORY_TONES[s.category] ?? 'ink'}><Globe2 size={18} /></span><label>{s.category}</label><h2>{s.name}</h2><p>{s.description}</p><footer><GitBranch size={13} />点击编辑<ChevronRight size={14} /></footer></article>)}</div>
+    <div className="world-grid">{filtered.length === 0
+      ? <div className="panel-empty">未找到匹配的设定，试试调整搜索词或切换分类</div>
+      : filtered.map(s => <article key={s.id} onClick={() => setEditing(s)} style={{ cursor: 'pointer' }}><span className={CATEGORY_TONES[s.category] ?? 'ink'}><Globe2 size={18} /></span><label>{s.category}</label><h2>{s.name}</h2><p>{s.description}</p><footer><GitBranch size={13} />点击编辑<ChevronRight size={14} /></footer></article>)}</div>
     {creating && <SettingForm novelId={workspace.novel.id} onClose={() => setCreating(false)} onSaved={async () => { setCreating(false); await reload() }} />}
     {editing && <SettingForm novelId={workspace.novel.id} initial={editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await reload() }} onDelete={async () => { await workspaceApi.deleteSetting(editing.id); setEditing(null); await reload() }} />}
     {aiOpen && <AiSettingModal novelId={workspace.novel.id} onClose={() => setAiOpen(false)} onSaved={async () => { setAiOpen(false); await reload() }} />}

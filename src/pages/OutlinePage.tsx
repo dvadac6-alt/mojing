@@ -158,7 +158,9 @@ export function OutlinePage({ workspace, reload }: { workspace: Workspace; reloa
             onDeleteEdge={e => void workspaceApi.deleteGraphEdge(e.id).then(() => { setSelectedEdge(null); reload() })} />
         </div>
       </>
-      : <section className="outline-table"><header><span>结构与标题</span><span>情节摘要</span><span>状态</span></header>{rows.map((r, i) => <div className={r[3]} key={workspace.chapters[i].id}><span><GripVertical size={13} /><ChevronDown size={13} /><FileText size={14} /><strong>{String(i + 1).padStart(2, '0')} {r[0]}</strong></span><p>{r[1]}</p><em>{r[2]}</em><button><MoreHorizontal size={15} /></button></div>)}</section>}
+      : <section className="outline-table"><header><span>结构与标题</span><span>情节摘要</span><span>状态</span></header>{rows.length === 0
+        ? <div className="panel-empty">还没有章节，点击右上角「添加节点」创建第一个章节</div>
+        : rows.map((r, i) => <div className={r[3]} key={workspace.chapters[i].id}><span><GripVertical size={13} /><ChevronDown size={13} /><FileText size={14} /><strong>{String(i + 1).padStart(2, '0')} {r[0]}</strong></span><p>{r[1]}</p><em>{r[2]}</em><button><MoreHorizontal size={15} /></button></div>)}</section>}
     {adding && <Modal eyebrow="大纲" title="添加节点" icon={GitBranch} onClose={() => setAdding(false)}
       footer={<div className="form-actions"><span className="muted">{nodeType === 'chapter' ? '新章节将追加到章节列表末尾' : '场景归属于所选章节'}</span><Button onClick={() => setAdding(false)}>取消</Button><Button kind="primary" onClick={submit} disabled={busy || !title.trim()}>{busy ? '添加中…' : '添加'}</Button></div>}>
       <div className="form-body">

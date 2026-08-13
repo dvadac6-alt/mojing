@@ -101,7 +101,9 @@ export function OverviewPage({ workspace, onWrite, onGoto }: { workspace: Worksp
         {emptyChapters.length > 0 && <Attention icon={FileClock} title={`第 ${emptyChapters[0].order} 章还是空白`} note="点击继续写作开始本章" />}
         {unresolved.length === 0 && <Attention icon={Check} title="所有伏笔均已收束" note="节奏良好，可埋设新的线索" />}
       </div></section>
-      <section className="panel recent"><PanelTitle title="最近章节" action="全部章节" onAction={onWrite} />{recent.map(c => <div key={c.id} onClick={onWrite} style={{ cursor: 'pointer' }}><b>{String(c.order).padStart(2, '0')}</b><strong>{c.title}</strong><span>{fmt(c.word_count)} 字</span><small>{c.status === 'completed' ? '已完成' : '写作中'}</small><ChevronRight size={15} /></div>)}</section>
+      <section className="panel recent"><PanelTitle title="最近章节" action="全部章节" onAction={onWrite} />{recent.length === 0
+        ? <div className="panel-empty actionable" onClick={onWrite}>还没有章节，点击前往写作页创建第一章 →</div>
+        : recent.map(c => <div key={c.id} onClick={onWrite} style={{ cursor: 'pointer' }}><b>{String(c.order).padStart(2, '0')}</b><strong>{c.title}</strong><span>{fmt(c.word_count)} 字</span><small>{c.status === 'completed' ? '已完成' : '写作中'}</small><ChevronRight size={15} /></div>)}</section>
       <section className="panel agent-promo"><span><WandSparkles size={22} /></span><div><label>创作助手</label><h3>让 AI 帮你续写下一章</h3><p>结合大纲、角色和未收束伏笔生成可审阅草稿。</p></div><Button kind="dark" onClick={onWrite}><Sparkles size={15} />开始创作</Button></section>
     </div>
   </Scroll>

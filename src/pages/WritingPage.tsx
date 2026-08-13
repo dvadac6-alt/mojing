@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Bot, BrainCircuit, Check, ChevronLeft, ChevronRight, Database, Feather, GripVertical,
   History, PanelRightClose, Plus, Save, ShieldCheck, Sparkles, Square,
@@ -19,32 +19,42 @@ const SIG_SEP = '\u0000'
 
 type DraftPage = { start: number; end: number; text: string }
 
+// Reusable measurement probe (#5). paginateByHeight binary-searches every page
+// boundary, calling this O(P·log N) times per re-pagination — for a 50k-char
+// chapter that's hundreds of calls. The old version created+appended+removed a
+// fresh <textarea> each call; reusing one element and only restyling when the
+// source's font metrics actually change cuts that to a value-set + scrollHeight
+// read, which is what makes paging a long chapter feel instant instead of janky.
+let _measureProbe: HTMLTextAreaElement | null = null
+let _measureStyleKey = ''
+
 function measureTextHeight(source: HTMLTextAreaElement, text: string, width: number): number {
-  const probe = document.createElement('textarea')
   const sourceStyle = window.getComputedStyle(source)
-  probe.value = text
-  probe.rows = 1
-  probe.style.position = 'fixed'
-  probe.style.left = '-10000px'
-  probe.style.top = '0'
-  probe.style.width = `${width}px`
-  probe.style.height = '0px'
-  probe.style.minHeight = '0'
-  probe.style.padding = sourceStyle.padding
-  probe.style.border = '0'
-  probe.style.boxSizing = 'border-box'
-  probe.style.font = sourceStyle.font
-  probe.style.lineHeight = sourceStyle.lineHeight
-  probe.style.letterSpacing = sourceStyle.letterSpacing
-  probe.style.textAlign = sourceStyle.textAlign
-  probe.style.whiteSpace = sourceStyle.whiteSpace
-  probe.style.wordBreak = sourceStyle.wordBreak
-  probe.style.overflow = 'hidden'
-  probe.style.visibility = 'hidden'
-  document.body.appendChild(probe)
-  const height = probe.scrollHeight
-  probe.remove()
-  return height
+  // Anything that changes how text wraps/flows must invalidate the cached style.
+  const styleKey = `${width}|${sourceStyle.font}|${sourceStyle.lineHeight}|${sourceStyle.padding}|${sourceStyle.letterSpacing}|${sourceStyle.wordBreak}|${sourceStyle.whiteSpace}|${sourceStyle.textAlign}`
+  if (!_measureProbe) {
+    _measureProbe = document.createElement('textarea')
+    _measureProbe.rows = 1
+    Object.assign(_measureProbe.style, {
+      position: 'fixed', left: '-10000px', top: '0', height: '0px', minHeight: '0',
+      border: '0', boxSizing: 'border-box', overflow: 'hidden', visibility: 'hidden',
+    })
+    document.body.appendChild(_measureProbe)
+  }
+  if (_measureStyleKey !== styleKey) {
+    const s = _measureProbe.style
+    s.width = `${width}px`
+    s.padding = sourceStyle.padding
+    s.font = sourceStyle.font
+    s.lineHeight = sourceStyle.lineHeight
+    s.letterSpacing = sourceStyle.letterSpacing
+    s.textAlign = sourceStyle.textAlign
+    s.whiteSpace = sourceStyle.whiteSpace
+    s.wordBreak = sourceStyle.wordBreak
+    _measureStyleKey = styleKey
+  }
+  _measureProbe.value = text
+  return _measureProbe.scrollHeight
 }
 
 function paginateByHeight(content: string, source: HTMLTextAreaElement, firstHeight: number, pageHeight: number): DraftPage[] {
@@ -349,8 +359,10 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
   const readingMinutes = Math.max(1, Math.ceil(activeChapter.word_count / 450))
 
   /** 渲染背景着色层：把当前页文本按 highlight 区间分成段，AI 新增绿色、删除红色。
-   *  highlights 的 offset 是相对于 draft 全文的，这里映射到当前页的局部 offset。 */
-  const renderBackdrop = () => {
+   *  highlights 的 offset 是相对于 draft 全文的，这里映射到当前页的局部 offset。
+   *  Memoized so plain typing (no highlights, same page) doesn't re-slice the
+   *  text on every keystroke — only page changes or AI highlights recompute it. */
+  const renderBackdrop = useMemo<React.ReactNode>(() => {
     const pageStart = currentPage.start
     const pageEnd = currentPage.end
     const text = currentPage.text
@@ -376,7 +388,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
     }
     if (cursor < text.length) out.push(<span key="tail">{text.slice(cursor)}</span>)
     return out
-  }
+  }, [currentPage, highlights])
 
   return <div className="writing-page">
     <aside className="chapters-pane"><div className="pane-title"><div><label>{workspace.novel.title}</label><strong>章节目录</strong></div><button onClick={createChapter}><Plus size={16} /></button></div><SearchBox text="搜索章节或正文" />
@@ -395,7 +407,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
          {currentPageIndex === 0 && <div className="page-heading"><label>第 {activeChapter.order} 章</label><input className="chapter-title-input" value={draftTitle} onChange={e => setDraftTitle(e.target.value)} aria-label="章节标题" /><div className="ornament"><i /><Feather size={14} /><i /></div></div>}
          <div className="manuscript-stage">
            {/* 背景着色层：与 textarea 同步，渲染 AI 新增（绿）/删除（红）标记 */}
-           <div className="manuscript-backdrop" aria-hidden="true">{renderBackdrop()}</div>
+           <div className="manuscript-backdrop" aria-hidden="true">{renderBackdrop}</div>
            <textarea ref={manuscriptRef} className="manuscript-textarea" value={currentPage.text} onChange={e => { setHighlights([]); setDraft(current => current.slice(0, currentPage.start) + e.target.value + current.slice(currentPage.end)) }} onContextMenu={onContextMenu} aria-label={`章节正文第 ${currentPageIndex + 1} 页`} placeholder={loadingContent ? '正在读取本章内容…' : '从这里开始写作……（右键空白处可 AI 补写）'} spellCheck={false} disabled={loadingContent} />
          </div>
          <div ref={headingMeasureRef} className="page-heading page-heading-measure" aria-hidden="true"><label>第 {activeChapter.order} 章</label><input className="chapter-title-input" value={draftTitle} readOnly tabIndex={-1} /><div className="ornament"><i /><Feather size={14} /><i /></div></div>

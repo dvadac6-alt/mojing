@@ -2,27 +2,27 @@ import { useEffect, useState } from 'react'
 import { Feather, FilePlus2, Import, Plus, ShieldCheck, Trash2 } from 'lucide-react'
 import { workspaceApi, type Novel } from '../workspaceApi'
 import { COVER_TONES, fmt } from '../lib/constants'
-import { Button, Field, Modal, PageHeader, Scroll, SearchBox } from '../components/ui'
+import { Button, Field, FormFooter, Modal, PageHeader, Scroll, SearchBox } from '../components/ui'
 import { inputCls, areaCls } from '../lib/constants'
 import { useAsyncAction } from '../hooks/useAsyncAction'
+import { confirmDialog } from '../components/Confirm'
 
-export function ProjectsPage({ onOpen, currentId }: { onOpen: (id: string) => void; currentId: string }) {
-  const [novels, setNovels] = useState<Novel[]>([])
-  const [loading, setLoading] = useState(true)
+export function ProjectsPage({ onOpen, currentId, novels, reloadNovels }: {
+  onOpen: (id: string) => void; currentId: string; novels: Novel[]; reloadNovels: () => Promise<void> | void
+}) {
   const [query, setQuery] = useState('')
   const [creating, setCreating] = useState(false)
   const [busyId, setBusyId] = useState('')
-
-  const load = async () => {
-    setLoading(true)
-    try { setNovels(await workspaceApi.listNovels()) } finally { setLoading(false) }
-  }
-  useEffect(() => { void load() }, [])
+  // novels 由 App 持有（侧栏切换器同一份）；这里只跟踪"首次就绪"以区分
+  // "0 部作品"与"仍在读取"。
+  const [ready, setReady] = useState(novels.length > 0)
+  useEffect(() => { void Promise.resolve(reloadNovels()).then(() => setReady(true)) }, [reloadNovels])
 
   const remove = async (id: string) => {
-    if (!confirm('删除作品将级联删除所有章节与资料，确定继续？')) return
+    const ok = await confirmDialog({ title: '删除作品', message: '删除作品将级联删除其所有章节、角色、地点、设定与伏笔，且无法恢复。建议先导出备份。', danger: true, confirmLabel: '删除作品' })
+    if (!ok) return
     setBusyId(id)
-    try { await workspaceApi.deleteNovel(id); await load() } catch { /* ignore */ } finally { setBusyId('') }
+    try { await workspaceApi.deleteNovel(id); await reloadNovels() } catch { /* ignore */ } finally { setBusyId('') }
   }
   const filtered = novels.filter(n => n.title.includes(query) || n.genre.includes(query))
 
@@ -32,8 +32,8 @@ export function ProjectsPage({ onOpen, currentId }: { onOpen: (id: string) => vo
     <div className="project-toolbar"><SearchBox text="搜索作品…" value={query} onChange={setQuery} /><div className="segments"><button className="active">最近编辑</button><button>全部作品</button><button>已完结</button></div></div>
     <div className="project-grid">
       <button className="new-project" onClick={() => setCreating(true)}><span><FilePlus2 size={23} /></span><strong>创建一部新小说</strong><small>从一个名字和想法开始</small></button>
-      {loading && novels.length === 0 && <p style={{ color: '#999', fontSize: 11 }}>正在读取本地作品…</p>}
-      {!loading && novels.length === 0 && <div className="panel-empty" style={{ gridColumn: '1 / -1' }}>还没有作品——在左侧填写书名与类型，开始你的第一部小说。所有内容只存在这台电脑，无需联网。</div>}
+      {!ready && novels.length === 0 && <p style={{ color: '#999', fontSize: 11 }}>正在读取本地作品…</p>}
+      {ready && novels.length === 0 && <div className="panel-empty" style={{ gridColumn: '1 / -1' }}>还没有作品——在左侧填写书名与类型，开始你的第一部小说。所有内容只存在这台电脑，无需联网。</div>}
       {filtered.map((n, i) => {
         const progress = n.target_words > 0 ? Math.min(100, Math.round((n.total_words / n.target_words) * 100)) : 0
         const tone = COVER_TONES[i % COVER_TONES.length]
@@ -67,7 +67,7 @@ function NovelForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved
     onSaved(n.id)
   })
   return <Modal eyebrow={initial ? '编辑作品' : '新建作品'} title={initial ? '作品设置' : '创建一部新小说'} icon={FilePlus2} onClose={onClose}
-    footer={<div className="form-actions"><span className="muted">作品信息保存在本地数据库</span>{error && <span className="form-error">{error}</span>}<Button onClick={onClose}>取消</Button><Button kind="primary" onClick={submit} disabled={busy}>{busy ? '保存中…' : (initial ? '保存修改' : '创建并进入')}</Button></div>}>
+    footer={<FormFooter error={error} busy={busy} onClose={onClose} onSubmit={submit} note="作品信息保存在本地数据库" submitLabel={initial ? '保存修改' : '创建并进入'} />}>
     <div className="form-body">
       <Field label="书名"><input className={inputCls} value={title} onChange={e => setTitle(e.target.value)} placeholder="给这部小说起个名字" autoFocus /></Field>
       <div className="form-row">

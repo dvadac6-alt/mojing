@@ -3,6 +3,7 @@ import os
 import shutil
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import create_engine, event, text
@@ -122,9 +123,12 @@ def _read_config() -> dict:
 
 
 def _write_config(data_dir: Path) -> None:
-    CONFIG_PATH.write_text(
-        json.dumps({"data_dir": str(data_dir)}, ensure_ascii=False), encoding="utf-8"
-    )
+    """Read-modify-write: storage.json also holds the auth token (written by
+    security.get_auth_token). Replacing the whole file here used to wipe it,
+    silently invalidating every existing session after a data-dir switch."""
+    data = _read_config()
+    data["data_dir"] = str(data_dir)
+    CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
 def configured_data_dir() -> Path:
@@ -181,24 +185,45 @@ def get_db():
             database.close()
 
 
+@contextmanager
+def session_scope():
+    """Lock-aware session for code outside the request/response cycle (background
+    threads, async generators). Raw `SessionLocal()` bypasses the RW lock, so a
+    concurrent data-dir switch could dispose the engine under a live session."""
+    with _db_lock.read():
+        database = SessionLocal()
+        try:
+            yield database
+        finally:
+            database.close()
+
+
 def _copy_db(source: Path, target: Path) -> None:
     """Copy a SQLite DB safely even while another connection has it open.
     Uses the online backup API: src.backup(dst) writes source pages into dst."""
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         target.unlink()
+    src = dst = None
     try:
         src = sqlite3.connect(str(source))
         dst = sqlite3.connect(str(target))
         with dst:
             src.backup(dst)  # writes source's main DB into dst
-        src.close()
-        dst.close()
     except Exception:
         try:
             shutil.copy2(source, target)
         except Exception:
             pass
+    finally:
+        # A failed backup must not leak the sqlite handles (they keep the file
+        # locked on Windows and would block later copy/delete attempts).
+        for conn in (src, dst):
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
 
 def _migrate_legacy_db(target: Path) -> None:
@@ -216,9 +241,48 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _migrate_legacy_columns()
     _migrate_doodles_to_strokes()
+    _ensure_indexes()
     # (#2) Snapshot the DB on every launch — guards against file-level loss
     # that chapter_versions cannot (disk fault, accidental delete, sync corruption).
     backup_once()
+
+
+# Secondary indexes for hot query paths (list-by-novel, strokes-by-map...).
+# create_all only builds indexes for *newly created* tables — existing installs
+# need these CREATE INDEX IF NOT EXISTS statements (SQLite never auto-indexes
+# FK columns). Names/columns must stay in sync with models.py __table_args__.
+_INDEXES = (
+    ("ix_chapters_novel_id", "chapters", "novel_id"),
+    ("ix_chapter_versions_chapter_id", "chapter_versions", "chapter_id"),
+    ("ix_scenes_chapter_id", "scenes", "chapter_id"),
+    ("ix_characters_novel_id", "characters", "novel_id"),
+    ("ix_locations_novel_id", "locations", "novel_id"),
+    ("ix_locations_map_id", "locations", "map_id"),
+    ("ix_world_settings_novel_id", "world_settings", "novel_id"),
+    ("ix_plot_threads_novel_id", "plot_threads", "novel_id"),
+    ("ix_graph_edges_novel_id", "graph_edges", "novel_id"),
+    ("ix_story_maps_novel_id", "story_maps", "novel_id"),
+    ("ix_terrains_map_id", "terrains", "map_id"),
+    ("ix_map_strokes_map_seq", "map_strokes", "map_id, seq"),
+    ("ix_map_strokes_map_color", "map_strokes", "map_id, color"),
+    ("ix_ai_usage_novel_created", "ai_usage", "novel_id, created_at"),
+)
+
+
+def _ensure_indexes() -> None:
+    """Idempotent: safe on every launch. Table names come from the hardcoded
+    tuple above (never user input), so f-string SQL is not an injection surface."""
+    with engine.connect() as conn:
+        tables = {
+            row[0] for row in conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        for name, table, columns in _INDEXES:
+            if table not in tables:
+                continue
+            conn.exec_driver_sql(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({columns})")
+        conn.commit()
 
 
 def _migrate_doodles_to_strokes() -> None:
@@ -271,8 +335,15 @@ def _migrate_legacy_columns() -> None:
     """In-place column additions for tables created before a schema change."""
     additions = {
         "chapter_versions": [("label", "VARCHAR(40) DEFAULT 'auto' NOT NULL")],
-        "ai_config": [("context_length", "INTEGER")],
+        "ai_config": [
+            ("context_length", "INTEGER"),
+            ("embed_base_url", "VARCHAR(255) DEFAULT '' NOT NULL"),
+            ("embed_model", "VARCHAR(120) DEFAULT '' NOT NULL"),
+            ("embed_api_key", "VARCHAR(255) DEFAULT '' NOT NULL"),
+        ],
         "locations": [("map_id", "VARCHAR(36) REFERENCES story_maps(id) ON DELETE SET NULL")],
+        "story_maps": [("background_image", "VARCHAR(255) DEFAULT '' NOT NULL")],
+        "map_strokes": [("shape", "VARCHAR(20) DEFAULT 'path' NOT NULL")],
     }
     with engine.connect() as conn:
         for table, columns in additions.items():
@@ -325,6 +396,7 @@ def set_data_dir(new_dir: str | Path) -> dict:
         Base.metadata.create_all(bind=engine)
         _migrate_legacy_columns()
         _migrate_doodles_to_strokes()
+        _ensure_indexes()
         info = storage_info()
         info["mounted_existing"] = mounted_existing
         return info
@@ -334,6 +406,8 @@ def reset_data_dir() -> dict:
     """Return to the default new/墨境数据 folder."""
     cfg = _read_config()
     if cfg.get("data_dir"):
-        # clear override so configured_data_dir() falls back to default
-        CONFIG_PATH.write_text("{}", encoding="utf-8")
+        # clear only the override so configured_data_dir() falls back to default;
+        # keep the other keys (auth_token!) intact.
+        cfg.pop("data_dir", None)
+        CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
     return set_data_dir(DEFAULT_DATA_DIR)

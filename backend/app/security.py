@@ -98,15 +98,21 @@ def encrypt_key(plaintext: str) -> str:
 
 
 def decrypt_key(stored: str) -> str:
-    """Decrypt a stored API key. Empty/legacy plaintext values fall through
-    untouched so existing installs keep working until the key is re-saved."""
+    """Decrypt a stored API key. Legacy plaintext values fall through untouched
+    so existing installs keep working until the key is re-saved; a *format-valid*
+    Fernet token that fails to decrypt (wrong/lost machine secret) returns ""
+    instead of the ciphertext — the latter would be sent to the provider as if
+    it were the real key (leaking it) and produce confusing auth errors."""
     if not stored:
         return ""
     try:
         return _fernet().decrypt(stored.encode("ascii")).decode("utf-8")
     except Exception:
-        # Legacy plaintext value or wrong machine secret — return as-is so the
-        # key is still usable; it will be re-encrypted on next save.
+        # Fernet tokens always start with the 0x80 version byte → "gAAA" in
+        # base64. Looks like a token but won't decrypt ⇒ secret mismatch.
+        if stored.startswith("gAAA"):
+            return ""
+        # Not a Fernet token at all → legacy plaintext, still usable as-is.
         return stored
 
 

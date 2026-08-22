@@ -54,13 +54,12 @@ def backup_once() -> dict | None:
     while target.exists():
         target = d / f"mojing-{stamp}-{i}.db"
         i += 1
+    src = dst = None
     try:
         src = sqlite3.connect(str(_db.DATABASE_PATH))
         dst = sqlite3.connect(str(target))
         with dst:
             src.backup(dst)
-        src.close()
-        dst.close()
     except Exception:
         # Fallback: plain copy (may miss the last in-flight txn, still useful).
         import shutil
@@ -68,6 +67,14 @@ def backup_once() -> dict | None:
             shutil.copy2(_db.DATABASE_PATH, target)
         except Exception:
             return None
+    finally:
+        # Never leak sqlite handles — on Windows they keep the files locked.
+        for conn in (src, dst):
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
     _prune()
     return {"name": target.name, "path": str(target), "size_kb": int(target.stat().st_size // 1024)}
 

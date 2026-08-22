@@ -25,3 +25,23 @@ export function useConnectingTimer(phase: 'idle' | 'connecting' | 'streaming' | 
   }, [phase])
   return elapsed
 }
+
+/** Total elapsed seconds while `active` is true (covers the whole generation:
+ * first-token wait + streaming). Used to render "生成中 · N 字 · Ms". */
+export function useTotalTimer(active: boolean): number {
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    if (!active) {
+      setElapsed(0)
+      return
+    }
+    setElapsed(0)
+    const startedAt = Date.now()
+    const id = window.setInterval(
+      () => setElapsed(Math.floor((Date.now() - startedAt) / 1000)),
+      500,
+    )
+    return () => window.clearInterval(id)
+  }, [active])
+  return elapsed
+}

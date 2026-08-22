@@ -4,6 +4,7 @@ the instruction and target length, sentence by sentence (streamed)."""
 from __future__ import annotations
 
 import re
+import zlib
 from typing import AsyncIterator
 
 
@@ -44,11 +45,13 @@ class MockProvider:
             target = _clamp(int(match.group(1)), 200, 1600)
 
         sentences: list[str] = []
-        opener_idx = abs(hash(user_msg)) % len(_OPENERS)
+        # crc32 instead of hash(): hash() is salted per process (PYTHONHASHSEED),
+        # so the same prompt produced different drafts on every backend restart.
+        opener_idx = zlib.crc32(user_msg.encode("utf-8")) % len(_OPENERS)
         sentences.append(_OPENERS[opener_idx])
         i = 1
         total = len(sentences[0])
-        conn_cycle = abs(hash(user_msg[::-1])) % len(_CONNECTORS)
+        conn_cycle = zlib.crc32(user_msg[::-1].encode("utf-8")) % len(_CONNECTORS)
         while total < target and i < 14:
             opener = _OPENERS[(opener_idx + i) % len(_OPENERS)]
             conn = _CONNECTORS[(conn_cycle + i) % len(_CONNECTORS)]

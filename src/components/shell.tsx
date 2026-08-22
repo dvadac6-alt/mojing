@@ -2,20 +2,37 @@ import { useEffect, useRef, useState } from 'react'
 import type { ElementType } from 'react'
 import {
   BookOpen, Check, ChevronDown, ChevronRight, CloudOff, Command,
-  Feather, HardDrive, LibraryBig, Minimize2, PanelLeftClose, PenLine,
-  Plus, Search, Settings, Square, BrainCircuit, Users, Globe2, X,
+  Feather, HardDrive, LibraryBig, Minimize2, Moon, PanelLeftClose, PenLine,
+  Plus, Search, Settings, Square, Sun, BrainCircuit, Users, Globe2, X,
 } from 'lucide-react'
 import type { Nav, Page } from '../lib/constants'
 import type { Novel } from '../workspaceApi'
 import { fmt } from '../lib/constants'
 
-export function TitleBar({ onCommand, novel }: { onCommand: () => void; novel?: Novel }) {
+export function TitleBar({ onCommand, novel, theme, onToggleTheme }: { onCommand: () => void; novel?: Novel; theme: 'light' | 'dark'; onToggleTheme: () => void }) {
+  const desktop = window.mojingDesktop
+  const [maximized, setMaximized] = useState(false)
+  useEffect(() => {
+    // Initial sync once, then event push from the main process — no more
+    // windowIsMaximized IPC on every resize tick.
+    void desktop?.windowIsMaximized?.().then(setMaximized)
+    const unsub = desktop?.onMaximizeChanged?.(setMaximized)
+    return () => { unsub?.() }
+  }, [])
   return <header className="titlebar">
     <span className="brand-icon"><Feather size={15} /></span><strong className="brand-name">墨境</strong>
-    <nav className="native-menu"><button>文件</button><button>编辑</button><button>视图</button><button>帮助</button></nav>
     <button className="title-search" onClick={onCommand}><Search size={13} /><span>搜索作品、章节或命令</span><kbd>Ctrl K</kbd></button>
     <span className="title-context"><i />《{novel?.title ?? '未命名作品'}》</span>
-    <div className="window-actions"><button><Minimize2 size={13} /></button><button><Square size={11} /></button><button className="close"><X size={14} /></button></div>
+    <button className="theme-toggle" onClick={onToggleTheme} title={theme === 'dark' ? '切换到白天模式' : '切换到夜间模式'} aria-label="切换昼夜主题">
+      {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+    </button>
+    <div className="window-actions">
+      <button title="最小化" onClick={() => desktop?.windowMinimize?.()}><Minimize2 size={13} /></button>
+      <button title={maximized ? '还原' : '最大化'} onClick={() => desktop?.windowToggleMaximize?.()}>
+        {maximized ? <Minimize2 size={11} style={{ transform: 'rotate(180deg)' }} /> : <Square size={11} />}
+      </button>
+      <button title="关闭" className="close" onClick={() => desktop?.windowClose?.()}><X size={14} /></button>
+    </div>
   </header>
 }
 
@@ -88,9 +105,19 @@ function BookSwitcher({ novel, novels, collapsed, onSwitch, onManageBooks }: { n
 }
 
 export function StatusBar({ unresolved, novel }: { unresolved: number; novel: Novel }) {
+  // 动态保存状态：WritingPage 通过 mojing:save-state 事件广播（解耦，不经 props）。
+  const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error' | null>(null)
+  useEffect(() => {
+    const onSave = (e: Event) => setSaveState((e as CustomEvent).detail ?? null)
+    window.addEventListener('mojing:save-state', onSave)
+    return () => window.removeEventListener('mojing:save-state', onSave)
+  }, [])
+  const saveLabel = saveState === 'saving' ? '正在自动保存…'
+    : saveState === 'error' ? '自动保存失败'
+    : '自动保存已启用'
   return <footer className="statusbar">
     <span><i><Check size={10} /></i> SQLite 本地数据库</span>
-    <span><HardDrive size={12} /> 自动保存已启用</span>
+    <span className={saveState === 'error' ? 'sb-error' : undefined}><HardDrive size={12} /> {saveLabel}</span>
     <b />
     <span><CloudOff size={12} /> 本地模式</span>
     <span><BrainCircuit size={12} /> {unresolved} 条伏笔待收束</span>
@@ -100,11 +127,14 @@ export function StatusBar({ unresolved, novel }: { unresolved: number; novel: No
 }
 
 export function CommandPalette({ onClose, onPage }: { onClose: () => void; onPage: (p: Page) => void }) {
+  const [query, setQuery] = useState('')
+  const q = query.trim().toLowerCase()
   const items: [ElementType, string, Page][] = [
     [PenLine, '继续写作', 'writing'], [Plus, '新建章节', 'writing'],
     [BrainCircuit, '打开伏笔看板', 'threads'], [Users, '角色资料', 'characters'],
     [Globe2, '世界观设定', 'world'], [LibraryBig, '参考资料库', 'library'],
     [Settings, '打开设置', 'settings'],
   ]
-  return <div className="modal" onMouseDown={onClose}><div className="command" onMouseDown={e => e.stopPropagation()}><header><Search size={18} /><input autoFocus placeholder="搜索页面、作品或命令…" /><kbd>Esc</kbd></header><label>建议操作</label>{items.map(([Icon, text, p]) => <button key={text} onClick={() => onPage(p)}><span><Icon size={15} /></span><strong>{text}</strong><ChevronRight size={14} /></button>)}<footer><Command size={12} /> 命令面板 <span>↑↓ 选择 · Enter 打开</span></footer></div></div>
+  const visible = q ? items.filter(([, text]) => text.toLowerCase().includes(q)) : items
+  return <div className="modal" onMouseDown={onClose}><div className="command" onMouseDown={e => e.stopPropagation()}><header><Search size={18} /><input autoFocus placeholder="搜索页面、作品或命令…" value={query} onChange={e => setQuery(e.target.value)} /><kbd>Esc</kbd></header><label>建议操作</label>{visible.map(([Icon, text, p]) => <button key={text} onClick={() => onPage(p)}><span><Icon size={15} /></span><strong>{text}</strong><ChevronRight size={14} /></button>)}{visible.length === 0 && <p className="command-empty">没有匹配的命令</p>}<footer><Command size={12} /> 命令面板 <span>输入关键词过滤 · 点击执行</span></footer></div></div>
 }

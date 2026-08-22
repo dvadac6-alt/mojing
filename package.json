@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "test": "pytest backend/tests -q",
     "test:backend": "pytest backend/tests -q",
+    "test:ui": "node --test src/lib/*.test.ts",
     "lint": "eslint src",
     "pack": "npm run build && npm run backend:dist && electron-builder --dir",
     "dist": "npm run build && npm run backend:dist && electron-builder --win --x64 --publish always",

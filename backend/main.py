@@ -1,6 +1,10 @@
+import logging
 import os
+import secrets
 import sys
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -12,6 +16,27 @@ from app.database import SessionLocal, init_db
 from app.routes import router
 from app.security import get_auth_token
 from app.seed import seed_demo_workspace
+
+logger = logging.getLogger(__name__)
+
+
+def _setup_file_logging() -> None:
+    """(#9 错误排查) Rotating file log under the data dir: the backend used to
+    run with zero logging, so silent failures (RAG, backup, usage recording)
+    left no trace. 2MB × 3 backups; the export zip skips the logs/ folder."""
+    from app.database import DATA_DIR
+    try:
+        log_dir = Path(DATA_DIR) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            log_dir / "mojing.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        root = logging.getLogger()
+        if not any(isinstance(h, RotatingFileHandler) for h in root.handlers):
+            root.addHandler(handler)
+    except OSError:
+        logger.warning("file logging unavailable (data dir not writable)", exc_info=True)
 
 # Loopback origins we trust: the Vite dev server, and the packaged desktop
 # shell (file:// loads report origin "null"). Everything else — including a
@@ -37,7 +62,12 @@ _DEV_MODE = _IS_DEV_BUILD or os.getenv("MOJING_DEV") == "1"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    _setup_file_logging()
     init_db()
+    # Force-generate + persist the token before serving: the desktop shell now
+    # reads it straight from storage.json (the /api/health endpoint no longer
+    # hands it out), so the file must exist by the time the probe succeeds.
+    get_auth_token()
     with SessionLocal() as database:
         seed_demo_workspace(database)
         # Import AI provider config from root .env (key encrypted at rest), so
@@ -46,7 +76,8 @@ async def lifespan(_: FastAPI):
         try:
             import_env_config(database)
         except Exception:
-            pass  # a malformed .env must never block startup
+            # a malformed .env must never block startup — but leave a trace.
+            logger.warning("import .env AI config failed", exc_info=True)
     yield
 
 
@@ -76,7 +107,9 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
         auth = request.headers.get("authorization", "")
         expected = f"Bearer {get_auth_token()}"
 
-        if auth == expected:
+        # Constant-time compare: a plain == leaks how many leading bytes of the
+        # token matched through timing, however marginal that is locally.
+        if secrets.compare_digest(auth, expected):
             return await call_next(request)
 
         # Dev compromise: a plain browser tab talking to the Vite dev server

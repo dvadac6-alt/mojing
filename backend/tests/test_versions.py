@@ -8,7 +8,12 @@ time — a module-level `from app.database import SessionLocal` would capture th
 REAL database binding before the per-test monkeypatch applies and write into the
 user's actual data dir.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive-UTC now, matching how app code stamps version timestamps."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 from app import database as db_mod
 from app.database import init_db
@@ -49,7 +54,7 @@ def test_bursts_outside_window_stack():
     db.commit()
     # Push the existing version's timestamp outside the window.
     old = db.query(ChapterVersion).filter_by(chapter_id=ch.id).first()
-    old.created_at = datetime.utcnow() - timedelta(seconds=AUTO_VERSION_THROTTLE_SECONDS + 60)
+    old.created_at = _utcnow() - timedelta(seconds=AUTO_VERSION_THROTTLE_SECONDS + 60)
     db.commit()
     _record_auto_version(db, ch)  # now outside window → new row
     db.commit()
@@ -64,7 +69,7 @@ def test_auto_versions_capped():
     db = db_mod.SessionLocal()
     ch = _make_chapter(db)
     # Insert MAX+10 auto versions with old timestamps so none hit the throttle.
-    base = datetime.utcnow() - timedelta(hours=2)
+    base = _utcnow() - timedelta(hours=2)
     for i in range(MAX_AUTO_VERSIONS_PER_CHAPTER + 10):
         db.add(ChapterVersion(
             chapter_id=ch.id, content=f"v{i}", word_count=2,
@@ -84,7 +89,7 @@ def test_labeled_versions_immortal():
     init_db()
     db = db_mod.SessionLocal()
     ch = _make_chapter(db)
-    base = datetime.utcnow() - timedelta(hours=2)
+    base = _utcnow() - timedelta(hours=2)
     for i in range(MAX_AUTO_VERSIONS_PER_CHAPTER + 5):
         db.add(ChapterVersion(
             chapter_id=ch.id, content=f"v{i}", word_count=2,

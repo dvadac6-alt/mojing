@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { GitBranch, Pencil, Trash2 } from 'lucide-react'
-import { workspaceApi, type Workspace } from '../workspaceApi'
+import { workspaceApi, type Novel, type ChapterSummary, type SceneSummary } from '../workspaceApi'
 import { Button, Modal } from './ui'
 
 /** Which tree node is selected / being renamed. */
@@ -20,17 +20,35 @@ function EditInput({ value, onChange, onSave, onCancel }: { value: string; onCha
 /**
  * Horizontal tree mind map of the outline: root = the novel, branches =
  * chapters, leaves = scenes under each chapter. Click a node to select it
- * (rename / delete actions appear); edits go through the normal APIs and the
- * workspace reloads afterwards.
+ * (rename / delete actions appear). Chapter mutations go through the normal
+ * APIs and call `reload` (chapters live in the slim workspace); scene
+ * mutations call `refreshScenes` (scenes are a lazily-loaded entity list).
  */
-export function MindMap({ workspace, reload, linkingMode, onPickNode }: { workspace: Workspace; reload: () => void; linkingMode?: boolean; onPickNode?: (id: string) => void }) {
-  const { novel, chapters, scenes } = workspace
+export function MindMap({ novel, chapters, scenes, reload, refreshScenes, linkingMode, onPickNode }: {
+  novel: Novel
+  chapters: ChapterSummary[]
+  scenes: SceneSummary[]
+  reload: () => void
+  refreshScenes: () => void
+  linkingMode?: boolean
+  onPickNode?: (id: string) => void
+}) {
   const [selected, setSelected] = useState<NodeRef | null>(null)
   const [editing, setEditing] = useState<NodeRef | null>(null)
   const [draft, setDraft] = useState('')
   const [confirming, setConfirming] = useState<NodeRef | null>(null)
 
-  const scenesOf = (chapterId: string) => scenes.filter(s => s.chapter_id === chapterId).sort((a, b) => a.order - b.order)
+  // 章节 → 场景一次分桶（预排序），替代每个章节一次 filter+sort 的 O(C·S)。
+  const scenesByChapter = useMemo(() => {
+    const m = new Map<string, SceneSummary[]>()
+    for (const s of scenes) {
+      const arr = m.get(s.chapter_id)
+      if (arr) arr.push(s); else m.set(s.chapter_id, [s])
+    }
+    for (const arr of m.values()) arr.sort((a, b) => a.order - b.order)
+    return m
+  }, [scenes])
+  const scenesOf = useCallback((chapterId: string) => scenesByChapter.get(chapterId) ?? [], [scenesByChapter])
   const chapterTitle = (id: string) => chapters.find(c => c.id === id)?.title ?? '章节'
   const sceneTitle = (id: string) => scenes.find(s => s.id === id)?.title ?? '场景'
 
@@ -49,7 +67,8 @@ export function MindMap({ workspace, reload, linkingMode, onPickNode }: { worksp
     try {
       if (node.kind === 'chapter') await workspaceApi.updateChapter(node.id, { title })
       else await workspaceApi.renameScene(node.id, title)
-      reload()
+      if (node.kind === 'chapter') reload()
+      else refreshScenes()
     } catch { /* keep the old title on failure */ }
   }
 
@@ -59,7 +78,8 @@ export function MindMap({ workspace, reload, linkingMode, onPickNode }: { worksp
       else await workspaceApi.deleteScene(node.id)
       setSelected(null)
       setConfirming(null)
-      reload()
+      if (node.kind === 'chapter') reload()
+      else refreshScenes()
     } catch { /* ignore */ }
   }
 

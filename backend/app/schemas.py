@@ -235,6 +235,7 @@ class StoryMapResponse(OrmModel):
     name: str
     description: str
     doodles: list[dict[str, Any]] = []
+    background_image: str = ""
     created_at: datetime
     updated_at: datetime
 
@@ -261,8 +262,9 @@ class TerrainResponse(OrmModel):
 # ---------- Map strokes (one row per doodle stroke) ----------
 class StrokeCreate(BaseModel):
     color: str = Field(min_length=4, max_length=20)
-    width: float = Field(gt=0, le=100)
+    width: float = Field(ge=0, le=100)  # 0 for rect grid-fill strokes (width is irrelevant)
     eraser: bool = False
+    shape: str = Field(default="path", pattern="^(path|rect)$")
     points: list[list[float]] = Field(min_length=1)
 
 
@@ -272,6 +274,7 @@ class StrokeResponse(OrmModel):
     color: str
     width: float
     eraser: bool
+    shape: str = "path"
     points: list[list[float]]
     seq: int
     created_at: datetime
@@ -406,6 +409,9 @@ class AIContextOptions(BaseModel):
     settings: bool = True
     threads: bool = True
     recent_chapters: int = 2
+    # RAG 检索增强（未启用 embedding 时静默跳过）
+    prior_chapters: bool = True   # 前文相关片段（跨章检索）
+    library: bool = True          # 资料库参考片段
 
 
 class AIGenerateRequest(BaseModel):
@@ -440,21 +446,56 @@ class AIModelsRequest(BaseModel):
     config_id: int | None = None
 
 
+# ---------- Library / RAG ----------
+class LibraryDocCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1)
+    category: str = "写作技法"
+    novel_id: str | None = None
+
+
+class LibraryDocResponse(OrmModel):
+    id: int
+    novel_id: str | None = None
+    name: str
+    category: str
+    source: str
+    size_chars: int
+    chunks: int = 0
+    created_at: datetime
+
+
+class RagTestSearchRequest(BaseModel):
+    novel_id: str | None = None
+    query: str = Field(min_length=1)
+    source_types: list[str] = Field(default_factory=lambda: ["chapter", "library"])
+
+
 # ---------- Workspace / misc ----------
-class WorkspaceResponse(BaseModel):
-    novel: NovelResponse
-    chapters: list[ChapterResponse]
+class StoragePathUpdate(BaseModel):
+    """POST /api/storage/path — previously a bare dict, bypassing validation."""
+    data_dir: str = Field(min_length=1, max_length=1000)
 
 
-class NovelDetailResponse(OrmModel):
+class WorkspaceCounts(BaseModel):
+    """Entity counts for the shell (sidebar badges / statusbar) — the slim
+    workspace payload no longer carries the entity rows themselves."""
+    scenes: int = 0
+    characters: int = 0
+    locations: int = 0
+    world_settings: int = 0
+    plot_threads: int = 0
+    unresolved_threads: int = 0
+    unresolved_major: int = 0
+    graph_edges: int = 0
+
+
+class WorkspaceResponse(OrmModel):
+    """Slim workspace (#2)：novel + 章节元数据 + 各实体计数。角色/地点/设定/
+    伏笔/场景/连线由各页面的独立 list 端点按需拉取，不再整包下发。"""
     novel: NovelResponse
     chapters: list[ChapterSummary]
-    scenes: list[SceneSummary]
-    characters: list[CharacterResponse]
-    locations: list[LocationResponse]
-    world_settings: list[WorldSettingResponse]
-    plot_threads: list[PlotThreadResponse]
-    graph_edges: list[GraphEdgeOut]
+    counts: WorkspaceCounts = Field(default_factory=WorkspaceCounts)
 
 
 class ExportRequest(BaseModel):
@@ -462,11 +503,9 @@ class ExportRequest(BaseModel):
     chapter_ids: list[str] | None = None
 
 
-class SearchRequest(BaseModel):
-    q: str = Field(min_length=1)
-
-
-class SearchResponse(BaseModel):
-    chapters: list[dict[str, Any]]
-    characters: list[dict[str, Any]]
-    threads: list[dict[str, Any]]
+class RagConfigUpdate(BaseModel):
+    """PUT /api/rag/config & POST /api/rag/config/test — same shape: fields are
+    optional; an omitted field keeps the stored value, "" clears it."""
+    model: str | None = Field(default=None, max_length=120)
+    base_url: str | None = Field(default=None, max_length=255)
+    api_key: str | None = Field(default=None, max_length=500)

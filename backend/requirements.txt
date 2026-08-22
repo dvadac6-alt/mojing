@@ -2,10 +2,15 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 sqlalchemy>=2.0.35
 pydantic>=2.10.0
+# Loads the root .env AI config on startup (app/ai_env.py). Was an implicit
+# dependency before — missing it broke .env import and /ai/export-env.
+python-dotenv>=1.0.0
 # Encryption for stored API keys (#1) and the OpenAI-compatible streaming
 # provider's HTTP client. Both ship in the standard Python install the
 # packaged build freezes, so they're listed explicitly here.
 cryptography>=44.0.0
 httpx>=0.27.0
+# RAG 余弦相似度（RAG设计方案.md；缺省时 retriever 自动回退纯 Python 实现）。
+numpy>=1.26.0
 # docx export (#5); pure-python, PyInstaller-friendly.
 python-docx>=1.1.0

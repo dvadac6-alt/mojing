@@ -28,6 +28,9 @@ a = Analysis(
         "h11",
         "anyio",
         "cryptography",
+        # app/ai_env.py imports dotenv at module scope — without this the
+        # frozen exe silently loses .env AI-config import/export.
+        "dotenv",
     ],
     hookspath=[],
     hooksconfig={},

@@ -22,13 +22,14 @@ export function GraphCanvas({ nodes, edges, legend, empty, linkingMode, onPickNo
     const angle = (i / nodes.length) * 2 * Math.PI - Math.PI / 2
     return { ...n, x: 50 + 36 * Math.cos(angle), y: 50 + 36 * Math.sin(angle) }
   })
-  const posOf = (id: string) => positioned.find(n => n.id === id)
+  // id → 坐标索引：边查找从每条边 O(N) 的 find 降为 O(1)。
+  const posById = new Map(positioned.map(n => [n.id, n]))
   return (
     <div className={'graph-canvas' + (linkingMode ? ' linking' : '')}>
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
         {edges.map((e, i) => {
-          const a = posOf(e.from)
-          const b = posOf(e.to)
+          const a = posById.get(e.from)
+          const b = posById.get(e.to)
           if (!a || !b) return null
           return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} />
         })}

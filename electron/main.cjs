@@ -1,5 +1,6 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
 const { spawn } = require('node:child_process')
+const fs = require('node:fs')
 const http = require('node:http')
 const path = require('node:path')
 // Auto-update (#10): only meaningful in packaged builds; dev has no update channel.
@@ -16,8 +17,37 @@ let backendPort = BASE_PORT
 let backendToken = ''
 
 // ---- health probe ----------------------------------------------------------
-// Reads /api/health to (a) detect a ready backend, (b) confirm it is actually
-// Mojing via the pid/started_at fingerprint, and (c) grab the bearer token.
+// Reads /api/health to (a) detect a ready backend and (b) confirm it is actually
+// Mojing via the app fingerprint. The bearer token is NOT in the health response
+// anymore (tightened #7): it is persisted by the backend in storage.json, which
+// we read directly — mirroring app/database.py's _resolve_config_path().
+function backendConfigPath() {
+  if (!app.isPackaged) {
+    // Source runs (python backend/main.py) store it beside the backend code.
+    return path.join(__dirname, '..', 'backend', 'storage.json')
+  }
+  // Packaged: the backend gets MOJING_DATA_DIR = <userData>/data and anchors
+  // the config at its parent — i.e. <userData>/storage.json.
+  return path.join(app.getPath('userData'), 'storage.json')
+}
+
+function readStoredToken(retries = 20) {
+  // The backend persists the token at startup; right after spawn the file may
+  // not exist yet, so poll briefly instead of failing the whole boot.
+  const file = backendConfigPath()
+  return new Promise((resolve, reject) => {
+    const attempt = (left) => {
+      try {
+        const data = JSON.parse(fs.readFileSync(file, 'utf-8'))
+        if (data.auth_token) return resolve(data.auth_token)
+      } catch { /* missing or not yet flushed */ }
+      if (left <= 0) return reject(new Error(`No auth token in ${file}`))
+      setTimeout(() => attempt(left - 1), 250)
+    }
+    attempt(retries)
+  })
+}
+
 function probeBackend(port) {
   return new Promise(resolve => {
     const req = http.get(`http://127.0.0.1:${port}/api/health`, response => {
@@ -27,7 +57,7 @@ function probeBackend(port) {
         if (response.statusCode !== 200) return resolve(null)
         try {
           const data = JSON.parse(body)
-          if (data.app === 'mojing' && data.auth_token) {
+          if (data.app === 'mojing') {
             resolve(data)
           } else {
             // Healthy service, but not ours — don't silently reuse a stranger's port.
@@ -45,16 +75,23 @@ function probeBackend(port) {
 
 async function isOurBackendReady(port) {
   const info = await probeBackend(port)
-  if (info) { backendToken = info.auth_token; return true }
-  return false
+  if (!info) return false
+  backendToken = await readStoredToken()
+  return true
 }
 
 function waitForBackend(port, retries = 40) {
   return new Promise((resolve, reject) => {
     const check = () => {
-      probeBackend(port).then(info => {
-        if (info && info.auth_token) { backendToken = info.auth_token; resolve() }
-        else retry()
+      probeBackend(port).then(async info => {
+        if (info) {
+          try {
+            backendToken = await readStoredToken()
+            resolve()
+          } catch (error) { reject(error) }
+        } else {
+          retry()
+        }
       })
     }
     const retry = () => {
@@ -133,6 +170,16 @@ ipcMain.on('mojing:getBackendUrl', event => {
 ipcMain.on('mojing:getAuthToken', event => {
   event.returnValue = backendToken
 })
+
+// Window controls for the frameless titlebar (minimize / maximize-toggle / close).
+ipcMain.on('window:minimize', () => { mainWindow?.minimize() })
+ipcMain.on('window:maximize', () => {
+  if (!mainWindow) return
+  if (mainWindow.isMaximized()) mainWindow.unmaximize()
+  else mainWindow.maximize()
+})
+ipcMain.on('window:close', () => { mainWindow?.close() })
+ipcMain.handle('window:isMaximized', () => mainWindow?.isMaximized() ?? false)
 
 // ---- auto-update (#10) -----------------------------------------------------
 // Feed URL points at GitHub Releases assets (electron-builder's "latest" file).
@@ -218,6 +265,29 @@ function createWindow() {
   })
   winState.manage(mainWindow)
 
+  // Push maximize state changes to the titlebar button (event-driven — the
+  // renderer used to re-invoke windowIsMaximized on every resize tick).
+  const sendMaxState = () => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('mojing:maximize-changed', mainWindow.isMaximized())
+    }
+  }
+  mainWindow.on('maximize', sendMaxState)
+  mainWindow.on('unmaximize', sendMaxState)
+
+  // ── 渲染进程导航加固 ──
+  // 页面内的 window.open / target=_blank 一律拒绝（应用没有多窗口场景）；
+  // 导航只允许应用自身（打包的 file:// 或开发用的 Vite dev server），
+  // 其余跳转转交系统浏览器，防止渲染层被引到任意远程页面。
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const isAppPage = url.startsWith('file://') || url.startsWith('http://127.0.0.1:') || url.startsWith('http://localhost:')
+    if (isAppPage) return
+    event.preventDefault()
+    void shell.openExternal(url)
+  })
+  mainWindow.webContents.on('will-attach-webview', event => event.preventDefault())
+
   const developmentUrl = process.env.MOJING_DEV_SERVER_URL
   if (developmentUrl) mainWindow.loadURL(developmentUrl)
   else mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
@@ -244,6 +314,15 @@ app.whenReady().then(async () => {
   }
 })
 
+// 杀掉后端子进程。before-quit 之外再挂 exit/信号兜底：主进程崩溃或被
+// 强杀时，PyInstaller 后端不会变成占用端口、吃 CPU 的孤儿进程。
+function killBackend() {
+  if (backendProcess && !backendProcess.killed) {
+    try { backendProcess.kill() } catch { /* already exited */ }
+    backendProcess = null
+  }
+}
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
@@ -252,6 +331,9 @@ app.on('activate', () => {
   if (!mainWindow) createWindow()
 })
 
-app.on('before-quit', () => {
-  if (backendProcess && !backendProcess.killed) backendProcess.kill()
-})
+app.on('before-quit', killBackend)
+app.on('quit', killBackend)
+process.on('exit', killBackend)
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => { killBackend(); process.exit(0) })
+}

@@ -8,6 +8,17 @@ contextBridge.exposeInMainWorld('mojingDesktop', {
   getAuthToken: () => ipcRenderer.sendSync('mojing:getAuthToken'),
   // Opens a native folder picker; returns the chosen absolute path or null.
   chooseDataDir: (defaultPath) => ipcRenderer.invoke('dialog:chooseDataDir', defaultPath),
+  // Frameless-window controls (titlebar buttons).
+  windowMinimize: () => ipcRenderer.send('window:minimize'),
+  windowToggleMaximize: () => ipcRenderer.send('window:maximize'),
+  windowClose: () => ipcRenderer.send('window:close'),
+  windowIsMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+  // Event push beats the old resize-tick polling for the maximize glyph.
+  onMaximizeChanged: (callback) => {
+    const handler = (_event, maximized) => callback(maximized)
+    ipcRenderer.on('mojing:maximize-changed', handler)
+    return () => ipcRenderer.removeListener('mojing:maximize-changed', handler)
+  },
   // Auto-update (#10): subscribe to status events; "restart & update" installs.
   onUpdateStatus: (callback) => {
     const handler = (_event, status) => callback(status)

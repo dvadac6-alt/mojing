@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   AlertTriangle, BrainCircuit, ChevronDown, ChevronRight, Clock3,
   FileText, MoreHorizontal, Plus, Tag, Trash2,
@@ -9,26 +9,46 @@ import {
   type ThreadPriority, type ThreadStatus, type Workspace,
 } from '../workspaceApi'
 import { THREAD_PRIORITY_LABEL, THREAD_STATUSES, areaCls, inputCls, selectCls } from '../lib/constants'
-import { Button, EmptyStateWrap, Field, Modal, PageHeader, SearchBox } from '../components/ui'
+import { confirmDialog } from '../components/Confirm'
+import { Button, EmptyStateWrap, Field, FormFooter, Modal, PageHeader, SearchBox } from '../components/ui'
 import { useAsyncAction } from '../hooks/useAsyncAction'
+import { useEntityList } from '../hooks/useEntityList'
 
 export function ThreadsPage({ workspace, reload }: { workspace: Workspace; reload: () => Promise<void> }) {
-  const threads = workspace.plot_threads
+  const novelId = workspace.novel.id
+  // #2 懒加载：伏笔/角色按需拉取 + 缓存；章节元数据来自瘦身后的 workspace。
+  const { items: threads, loading, patch: patchThreads } = useEntityList('plot-threads', novelId, workspaceApi.listThreads)
+  const { items: characters } = useEntityList('characters', novelId, workspaceApi.listCharacters)
+  const chapters: ChapterSummary[] = workspace.chapters
   const [query, setQuery] = useState('')
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<PlotThread | null>(null)
-  const charName = (id: string) => workspace.characters.find(c => c.id === id)?.name.slice(0, 1) ?? '?'
+  // id → 姓氏首字索引：每个伏笔卡片头像从 O(N) find 降为 O(1) 查表。
+  const charNameById = useMemo(
+    () => new Map(characters.map(c => [c.id, c.name.slice(0, 1)])),
+    [characters],
+  )
+  const charName = (id: string) => charNameById.get(id) ?? '?'
   const unresolved = threads.filter(t => t.status !== 'resolved')
   const majorUnresolved = unresolved.filter(t => t.priority === 'major')
   const matches = (t: PlotThread) => t.title.includes(query) || t.description.includes(query)
+
+  // 状态推进/新增/删除都会改变"未收束"计数（侧栏 + 状态栏）→ patch 后补轻量 reload。
+  const upsert = (saved: PlotThread) => {
+    patchThreads(prev =>
+      prev.some(t => t.id === saved.id) ? prev.map(t => (t.id === saved.id ? saved : t)) : [...prev, saved])
+    void reload()
+  }
 
   const advance = async (t: PlotThread) => {
     const order: ThreadStatus[] = ['planted', 'hinted', 'developing', 'resolved']
     const next = order[Math.min(order.length - 1, order.indexOf(t.status) + 1)]
     if (next === 'resolved') { setEditing(t); return }
-    await workspaceApi.updateThread(t.id, { status: next }); void reload()
+    const saved = await workspaceApi.updateThread(t.id, { status: next })
+    upsert(saved)
   }
 
+  if (loading) return <div className="page-loading-fallback">加载中…</div>
   if (threads.length === 0) return <EmptyStateWrap icon={BrainCircuit} title="还没有伏笔" desc="标记一条伏笔，开始追踪它从埋设到收束的全过程。" action={() => setCreating(true)} />
 
   return <div className="threads-page"><div className="threads-top">
@@ -39,16 +59,16 @@ export function ThreadsPage({ workspace, reload }: { workspace: Workspace; reloa
     <div className="kanban">{THREAD_STATUSES.map(col => {
       const cards = threads.filter(t => t.status === col.id && matches(t))
       return <section key={col.id}><header><i className={col.tone} /><strong>{col.label}</strong><span>{cards.length}</span><button onClick={() => setCreating(true)}><Plus size={14} /></button></header>
-        {cards.map(t => <article className={'thread-card ' + t.priority} key={t.id} onClick={() => setEditing(t)}><label>{THREAD_PRIORITY_LABEL[t.priority]}</label><button onClick={e => { e.stopPropagation(); if (confirm('删除此伏笔？')) { void workspaceApi.deleteThread(t.id).then(reload) } }}><MoreHorizontal size={15} /></button><h3>{t.title}</h3><p>{t.description}</p><footer><span><FileText size={11} />第 {workspace.chapters.find(c => c.id === t.planted_chapter_id)?.order ?? '—'} 章</span>{t.status !== 'resolved' && <span><Clock3 size={11} />{THREAD_PRIORITY_LABEL[t.priority]}</span>}</footer>{t.related_characters.length > 0 && <div>{t.related_characters.slice(0, 3).map(id => <b key={id}>{charName(id)}</b>)}{t.related_characters.length > 3 && <em>+{t.related_characters.length - 3}</em>}</div>}</article>)}
+        {cards.map(t => <article className={'thread-card ' + t.priority} key={t.id} onClick={() => setEditing(t)}><label>{THREAD_PRIORITY_LABEL[t.priority]}</label><button aria-label="更多操作" onClick={e => { e.stopPropagation(); void confirmDialog({ title: '删除伏笔', message: `删除伏笔「${t.title}」？`, danger: true }).then(ok => { if (ok) void workspaceApi.deleteThread(t.id).then(() => patchThreads(prev => prev.filter(x => x.id !== t.id))) }) }}><MoreHorizontal size={15} /></button><h3>{t.title}</h3><p>{t.description}</p><footer><span><FileText size={11} />第 {chapters.find(c => c.id === t.planted_chapter_id)?.order ?? '—'} 章</span>{t.status !== 'resolved' && <span><Clock3 size={11} />{THREAD_PRIORITY_LABEL[t.priority]}</span>}</footer>{t.related_characters.length > 0 && <div>{t.related_characters.slice(0, 3).map(id => <b key={id}>{charName(id)}</b>)}{t.related_characters.length > 3 && <em>+{t.related_characters.length - 3}</em>}</div>}</article>)}
         {col.id !== 'resolved' && <button className="add-card" onClick={() => setCreating(true)}><Plus size={13} />添加伏笔</button>}
       </section>})}
     </div>
-    {creating && <ThreadForm novelId={workspace.novel.id} chapters={workspace.chapters} characters={workspace.characters} onClose={() => setCreating(false)} onSaved={async () => { setCreating(false); await reload() }} />}
-    {editing && <ThreadForm novelId={workspace.novel.id} chapters={workspace.chapters} characters={workspace.characters} initial={editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await reload() }} onDelete={async () => { await workspaceApi.deleteThread(editing.id); setEditing(null); await reload() }} onAdvance={advance} />}
+    {creating && <ThreadForm novelId={novelId} chapters={chapters} characters={characters} onClose={() => setCreating(false)} onSaved={saved => { setCreating(false); upsert(saved) }} />}
+    {editing && <ThreadForm novelId={novelId} chapters={chapters} characters={characters} initial={editing} onClose={() => setEditing(null)} onSaved={saved => { setEditing(null); upsert(saved) }} onDelete={async () => { await workspaceApi.deleteThread(editing.id); patchThreads(prev => prev.filter(x => x.id !== editing.id)); void reload(); setEditing(null) }} onAdvance={advance} />}
   </div>
 }
 
-function ThreadForm({ novelId, chapters, characters, initial, onClose, onSaved, onDelete, onAdvance }: { novelId: string; chapters: ChapterSummary[]; characters: Character[]; initial?: PlotThread; onClose: () => void; onSaved: () => void; onDelete?: () => void; onAdvance?: (t: PlotThread) => Promise<void> }) {
+function ThreadForm({ novelId, chapters, characters, initial, onClose, onSaved, onDelete, onAdvance }: { novelId: string; chapters: ChapterSummary[]; characters: Character[]; initial?: PlotThread; onClose: () => void; onSaved: (saved: PlotThread) => void; onDelete?: () => void; onAdvance?: (t: PlotThread) => Promise<void> }) {
   const [title, setTitle] = useState(initial?.title ?? '')
   const [description, setDescription] = useState(initial?.description ?? '')
   const [status, setStatus] = useState<ThreadStatus>(initial?.status ?? 'planted')
@@ -59,11 +79,15 @@ function ThreadForm({ novelId, chapters, characters, initial, onClose, onSaved, 
   const { busy, error, run } = useAsyncAction()
   const submit = () => run(async () => {
     const data = { title: title.trim() || '未命名伏笔', description, status, priority, planted_chapter_id: planted || null, related_characters: related, notes }
-    if (initial) await workspaceApi.updateThread(initial.id, data); else await workspaceApi.createThread(novelId, data)
-    onSaved()
+    if (initial) { const saved = await workspaceApi.updateThread(initial.id, data); onSaved(saved) }
+    else { const saved = await workspaceApi.createThread(novelId, data); onSaved(saved) }
   })
   return <Modal eyebrow={initial ? '编辑伏笔' : '新建伏笔'} title={title || '新伏笔'} icon={BrainCircuit} onClose={onClose}
-    footer={<div className="form-actions">{initial && onDelete && onAdvance && <><Button onClick={() => void onAdvance(initial)}><ChevronRight size={13} />推进状态</Button><Button kind="danger" onClick={() => { if (confirm('删除此伏笔？')) void onDelete() }}><Trash2 size={13} />删除</Button><b /></>}{error && <span className="form-error">{error}</span>}<Button onClick={onClose}>取消</Button><Button kind="primary" onClick={submit} disabled={busy}>{busy ? '保存中…' : '保存'}</Button></div>}>
+    footer={<FormFooter error={error} busy={busy} onClose={onClose} onSubmit={submit} extra={initial && onDelete && onAdvance ? <>
+      <Button onClick={() => void onAdvance(initial)}><ChevronRight size={13} />推进状态</Button>
+      <Button kind="danger" onClick={async () => { const ok = await confirmDialog({ title: '删除伏笔', message: `删除伏笔「${initial?.title ?? ''}」？`, danger: true }); if (ok) void onDelete() }}><Trash2 size={13} />删除</Button>
+      <b />
+    </> : undefined} />}>
     <div className="form-body">
       <Field label="标题"><input className={inputCls} value={title} onChange={e => setTitle(e.target.value)} autoFocus /></Field>
       <Field label="描述"><textarea className={areaCls} value={description} onChange={e => setDescription(e.target.value)} placeholder="这条伏笔埋了什么？" /></Field>
@@ -72,7 +96,7 @@ function ThreadForm({ novelId, chapters, characters, initial, onClose, onSaved, 
         <Field label="优先级"><select className={selectCls} value={priority} onChange={e => setPriority(e.target.value as ThreadPriority)}><option value="major">主线</option><option value="minor">支线</option><option value="detail">细节</option></select></Field>
         <Field label="埋设章节"><select className={selectCls} value={planted} onChange={e => setPlanted(e.target.value)}><option value="">（未指定）</option>{chapters.map(c => <option key={c.id} value={c.id}>第 {c.order} 章</option>)}</select></Field>
       </div>
-      <Field label="关联角色"><div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>{characters.map(c => <button key={c.id} onClick={() => setRelated(r => r.includes(c.id) ? r.filter(x => x !== c.id) : [...r, c.id])} style={{ padding: '4px 9px', borderRadius: 14, fontSize: 10, border: `1px solid ${related.includes(c.id) ? c.color : '#dcd9d0'}`, background: related.includes(c.id) ? c.color : '#fffefa', color: related.includes(c.id) ? 'white' : '#6b6f6b' }}>{c.name}</button>)}</div></Field>
+      <Field label="关联角色"><div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>{characters.map(c => <button key={c.id} onClick={() => setRelated(r => r.includes(c.id) ? r.filter(x => x !== c.id) : [...r, c.id])} style={{ padding: '4px 9px', borderRadius: 14, fontSize: 10, border: `1px solid ${related.includes(c.id) ? c.color : 'var(--line-2)'}`, background: related.includes(c.id) ? c.color : 'var(--bg-panel)', color: related.includes(c.id) ? 'white' : 'var(--text-3)' }}>{c.name}</button>)}</div></Field>
       <Field label="收束计划 / 备注"><textarea className={areaCls} value={notes} onChange={e => setNotes(e.target.value)} /></Field>
     </div>
   </Modal>

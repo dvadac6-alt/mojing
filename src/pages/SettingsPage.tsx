@@ -8,8 +8,10 @@ import {
   type AIConfig, type StorageInfo, type Workspace,
 } from '../workspaceApi'
 import { areaCls, inputCls, selectCls } from '../lib/constants'
-import { Button, Field, Modal, PageHeader, Scroll } from '../components/ui'
+import { Button, Field, FormFooter, Modal, PageHeader, Scroll } from '../components/ui'
 import { useAsyncAction } from '../hooks/useAsyncAction'
+import { confirmDialog } from '../components/Confirm'
+import { toast } from '../components/Toast'
 
 export function SettingsPage({ workspace, reload }: { workspace: Workspace; reload: () => Promise<void> }) {
   const sections: [ElementType, string][] = [[Settings, '通用'], [PenLine, '编辑器'], [Bot, 'AI 模型'], [Download, '导出'], [HardDrive, '数据与备份'], [CircleHelp, '关于']]
@@ -17,7 +19,7 @@ export function SettingsPage({ workspace, reload }: { workspace: Workspace; relo
   return <div className="settings-page">
     <aside>
       <UpdateBanner />
-      <div><label>应用偏好</label><strong>设置</strong></div><nav>{sections.map(([Icon, text], i) => { const I = Icon; return <button className={active === text ? 'active' : ''} key={text} onClick={() => setActive(text)}><I size={15} />{text}</button> })}</nav>
+      <div><label>应用偏好</label><strong>设置</strong></div><nav>{sections.map(([Icon, text]) => { const I = Icon; return <button className={active === text ? 'active' : ''} key={text} onClick={() => setActive(text)}><I size={15} />{text}</button> })}</nav>
     </aside>
     <section>
       {active === 'AI 模型' && <AISection onSaved={reload} />}
@@ -36,19 +38,55 @@ function AISection({ onSaved }: { onSaved: () => Promise<void> }) {
   const [editing, setEditing] = useState<AIConfig | null>(null)
   const [creating, setCreating] = useState(false)
   const [meta, setMeta] = useState<{ offline_fallback: boolean } | null>(null)
-  const load = async () => { setLoading(true); try { setConfigs(await workspaceApi.listAIConfigs()); setMeta(await workspaceApi.aiModels()) } finally { setLoading(false) } }
+  const load = async () => {
+    setLoading(true)
+    try {
+      // 并行拉取：配置列表与模型元信息互不依赖。
+      const [cfgs, m] = await Promise.all([workspaceApi.listAIConfigs(), workspaceApi.aiModels()])
+      setConfigs(cfgs); setMeta(m)
+    } finally { setLoading(false) }
+  }
   useEffect(() => { void load() }, [])
   const setActive = async (cfg: AIConfig) => { await workspaceApi.updateAIConfig(cfg.id, { is_active: true }); await load(); await onSaved() }
-  const remove = async (cfg: AIConfig) => { if (confirm('删除此模型配置？')) { await workspaceApi.deleteAIConfig(cfg.id); await load() } }
+  // ── RAG 索引状态 + 独立配置弹窗（RAG设计方案.md §七，v2 与写作模型解耦）──
+  const [rag, setRag] = useState<{ enabled: boolean; embed_model: string; chunks: { total: number; chapter: number; library: number; pending: number }; stale_model_chunks: number } | null>(null)
+  const [rebuilding, setRebuilding] = useState(false)
+  const [ragFormOpen, setRagFormOpen] = useState(false)
+  const loadRag = async () => { try { setRag(await workspaceApi.ragStatus()) } catch { /* ignore */ } }
+  useEffect(() => { void loadRag() }, [configs])
+  const rebuild = async () => {
+    setRebuilding(true)
+    try { await workspaceApi.ragRebuild(); await loadRag() } finally { setRebuilding(false) }
+  }
+  const remove = async (cfg: AIConfig) => { const ok = await confirmDialog({ title: '删除模型配置', message: `删除「${cfg.name}」的配置？已保存的 API Key 将一并清除。`, danger: true, confirmLabel: '删除' }); if (ok) { await workspaceApi.deleteAIConfig(cfg.id); await load() } }
   return <Scroll>
     <PageHeader eyebrow="AI 调度" title="AI 模型" desc="配置 OpenAI 兼容的模型（GPT / DeepSeek / Claude 兼容端点）。未配置时将自动使用本地离线生成。" actions={<>
-      <Button onClick={async () => { try { const r = await workspaceApi.exportAIEnv(); alert(r.ok ? `已同步到 ${r.path}` : r.detail) } catch (e) { alert('同步失败：' + (e instanceof Error ? e.message : '')) } }}><Download size={14} />同步到 .env</Button>
-      <Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />添加模型</Button>
+      <Button onClick={async () => { try { const r = await workspaceApi.exportAIEnv(); if (r.ok) toast.success(`已同步到 ${r.path}`); else toast.error(r.detail) } catch (e) { toast.error('同步失败：' + (e instanceof Error ? e.message : '')) } }}><Download size={14} />同步到 .env</Button>
+      <Button onClick={() => setRagFormOpen(true)}><Database size={14} />{rag?.enabled ? 'RAG 模型' : '配置 RAG 模型'}</Button>
+      <Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />添加写作模型</Button>
     </>} />
     <div style={{ maxWidth: 720, margin: '0 auto 18px', padding: '12px 14px', border: '1px solid #e2dfd6', borderRadius: 9, background: '#fffefa', fontSize: 11, color: '#6b6f6b' }}>
       <ShieldCheck size={14} style={{ verticalAlign: -2, marginRight: 6, color: '#6e7e74' }} />
       {meta?.offline_fallback && '已启用离线兜底：未配置可用密钥时，AI 面板仍可生成示例草稿。'} API Key 加密存储于本地，永不下发至前端。点「同步到 .env」可把当前配置（含 Key 明文）写入项目根目录的 .env 文件，方便备份与查看。
     </div>
+    {rag && (
+      <div className="rag-status-card">
+        <div>
+          <strong>检索增强（RAG）{rag.enabled ? '已启用' : '未启用'}</strong>
+          <small>
+            {rag.enabled
+              ? `模型 ${rag.embed_model} · 章节 ${rag.chunks.chapter} 块 / 资料 ${rag.chunks.library} 块${rag.chunks.pending ? ` · 待向量化 ${rag.chunks.pending}` : ''}`
+              : '点右上「配置 RAG 模型」填入 Embedding 服务（可与写作模型不同厂商），自动启用前文检索 / 资料库 / 语义搜索。'}
+          </small>
+          {rag.stale_model_chunks > 0 && <small className="rag-warn">检测到 {rag.stale_model_chunks} 块使用旧模型向量，请重建索引。</small>}
+        </div>
+        <div className="rag-status-actions">
+          <Button onClick={() => setRagFormOpen(true)}>{rag.enabled ? '编辑' : '去配置'}</Button>
+          <Button onClick={rebuild} disabled={rebuilding || !rag.enabled}>{rebuilding ? '重建中…' : '重建索引'}</Button>
+        </div>
+      </div>
+    )}
+    {ragFormOpen && <RagConfigForm onClose={() => setRagFormOpen(false)} onSaved={async () => { setRagFormOpen(false); await loadRag() }} />}
     <div style={{ maxWidth: 720, margin: '0 auto' }} className="settings-config-list">
       {loading && <p style={{ color: '#999', fontSize: 11 }}>读取配置…</p>}
       {!loading && configs.length === 0 && <div className="empty-state"><span><Bot size={22} /></span><h3>还没有配置模型</h3><p>添加一个 OpenAI 兼容模型以启用真实 AI 续写；在此之前将使用离线生成。</p><Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />添加模型</Button></div>}
@@ -63,6 +101,70 @@ function AISection({ onSaved }: { onSaved: () => Promise<void> }) {
     {creating && <AIConfigForm onClose={() => setCreating(false)} onSaved={async () => { setCreating(false); await load() }} />}
     {editing && <AIConfigForm initial={editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await load() }} />}
   </Scroll>
+}
+
+/** RAG embedding 独立配置弹窗（与写作模型完全解耦，可填不同厂商）。 */
+const RAG_PRESETS = [
+  { key: 'siliconflow', label: '硅基流动（推荐）', base_url: 'https://api.siliconflow.cn/v1', model: 'BAAI/bge-m3' },
+  { key: 'openai', label: 'OpenAI', base_url: 'https://api.openai.com/v1', model: 'text-embedding-3-small' },
+]
+
+function RagConfigForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [model, setModel] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [hasKey, setHasKey] = useState(false)
+  const [keyHint, setKeyHint] = useState('')
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState('')
+  const { busy, error, run } = useAsyncAction()
+
+  useEffect(() => {
+    void workspaceApi.getRagConfig().then(cfg => {
+      setModel(cfg.model); setBaseUrl(cfg.base_url)
+      setHasKey(cfg.has_key); setKeyHint(cfg.key_hint)
+    }).catch(() => {})
+  }, [])
+
+  const applyPreset = (p: typeof RAG_PRESETS[number]) => { setBaseUrl(p.base_url); setModel(p.model) }
+  const payload = () => {
+    const data: { model?: string; base_url?: string; api_key?: string } = { model: model.trim(), base_url: baseUrl.trim() }
+    if (apiKey !== '') data.api_key = apiKey
+    return data
+  }
+  const submit = () => run(async () => {
+    await workspaceApi.saveRagConfig(payload())
+    onSaved()
+  })
+  const test = async () => {
+    setTesting(true); setTestResult('')
+    try {
+      const data: { model?: string; base_url?: string; api_key?: string } = { model: model.trim(), base_url: baseUrl.trim() }
+      if (apiKey !== '') data.api_key = apiKey
+      const res = await workspaceApi.testRagConfig(data)
+      setTestResult(res.detail)
+    } catch (e) { setTestResult(e instanceof Error ? e.message : '测试失败') } finally { setTesting(false) }
+  }
+  return <Modal eyebrow="RAG 检索增强" title="RAG 模型配置" icon={Database} onClose={onClose}
+    footer={<FormFooter error={error} busy={busy} onClose={onClose} onSubmit={submit} extra={
+      <Button onClick={test} disabled={testing || busy || !model.trim() || !baseUrl.trim()}>{testing ? '测试中…' : '测试连通'}</Button>
+    } />}>
+    <div className="form-body">
+      <Field label="服务商预设（自动填写，可修改）">
+        <div className="segments">
+          {RAG_PRESETS.map(p => <button key={p.key} className={baseUrl === p.base_url ? 'active' : ''} onClick={() => applyPreset(p)}>{p.label}</button>)}
+        </div>
+      </Field>
+      <Field label="Embedding 模型 ID"><input className={inputCls} value={model} onChange={e => setModel(e.target.value)} placeholder="BAAI/bge-m3" autoFocus /></Field>
+      <Field label="Base URL（需提供 /v1/embeddings 接口）"><input className={inputCls} value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="https://api.siliconflow.cn/v1" /></Field>
+      <Field label="API Key"><input className={inputCls} type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={hasKey ? `已保存（${keyHint}），留空保持不变` : '该服务商的 API Key'} /></Field>
+      {testResult && <div className="form-error" style={{ color: testResult.startsWith('连接成功') ? '#5a7d6a' : undefined }}>{testResult}</div>}
+      <small style={{ color: 'var(--text-muted)', lineHeight: 1.7 }}>
+        RAG 与写作模型相互独立——写作继续用左边的模型列表，这里只负责向量化检索。<br />
+        启用后切块文本将发送至该服务商做向量化；正文与索引仍完整保存在本地。
+      </small>
+    </div>
+  </Modal>
 }
 
 function AIConfigForm({ initial, onClose, onSaved }: { initial?: AIConfig; onClose: () => void; onSaved: () => void }) {
@@ -149,7 +251,7 @@ function AIConfigForm({ initial, onClose, onSaved }: { initial?: AIConfig; onClo
   const fmtContext = (n: number | null) => n ? (n >= 1000 ? `${(n / 1000).toFixed(n % 1000 ? 1 : 0)}K` : String(n)) : null
   const keyPlaceholder = initial?.has_key ? `已保存（${initial.key_hint}），留空保持不变` : 'sk-…'
   return <Modal eyebrow={initial ? '编辑模型' : '添加模型'} title={name || '新模型'} icon={Bot} onClose={onClose}
-    footer={<div className="form-actions">{error && <span className="form-error">{error}</span>}<Button onClick={onClose}>取消</Button><Button kind="primary" onClick={submit} disabled={busy}>{busy ? '保存中…' : '保存'}</Button></div>}>
+    footer={<FormFooter error={error} busy={busy} onClose={onClose} onSubmit={submit} />}>
     <div className="form-body">
       <Field label="服务商预设（自动填写地址与模型，可再修改）">
         <div className="segments">
@@ -268,6 +370,9 @@ function DataSection({ reload }: { reload: () => Promise<void> }) {
     } catch (e) { setError(e instanceof Error ? e.message : '切换路径失败') } finally { setBusy(false) }
   }
   const reset = async () => {
+    // 切数据目录是重操作（迁移全部数据），先确认再执行。
+    const ok = await confirmDialog({ title: '恢复默认路径', message: '将把数据目录切回默认位置并迁移现有数据，期间请勿关闭应用。确认继续？', confirmLabel: '恢复默认' })
+    if (!ok) return
     setBusy(true); setError('')
     try { await workspaceApi.resetStorage(); await loadInfo(); await reload() }
     catch (e) { setError(e instanceof Error ? e.message : '恢复失败') } finally { setBusy(false) }

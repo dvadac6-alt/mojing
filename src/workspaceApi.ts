@@ -75,7 +75,11 @@ export type Doodle = {
   color: string
   width: number
   eraser?: boolean
-  points: [number, number][]
+  /** 'path' = free-hand line (points are [x,y] pairs along the stroke);
+   *  'rect' = grid-fill brush (points are [x1,y1,x2,y2] rectangle corners). */
+  shape?: 'path' | 'rect'
+  /** path: [[x,y],...]; rect: [[x1,y1,x2,y2],...] — kept as number[][] so both fit. */
+  points: number[][]
 }
 
 /** A map canvas inside a novel — different maps are different realms/areas
@@ -86,6 +90,8 @@ export type StoryMap = {
   name: string
   description: string
   doodles: Doodle[]
+  /** Filename of an optional uploaded background image (empty = default). */
+  background_image: string
   created_at: string
   updated_at: string
 }
@@ -106,6 +112,7 @@ export type Stroke = {
   color: string
   width: number
   eraser: boolean
+  shape: 'path' | 'rect'
   points: number[][]
   seq: number
   created_at: string
@@ -183,15 +190,35 @@ export type AIConfig = {  id: number
   created_at: string
 }
 
+/** 资料库文档（RAG 素材） */
+export type LibraryDoc = {
+  id: number
+  novel_id: string | null
+  name: string
+  category: string
+  source: string
+  size_chars: number
+  chunks: number
+  created_at: string
+}
+
+/** Sidebar/statusbar badge counts — the slim workspace (#2 懒加载) no longer
+ * carries entity rows; entity pages fetch their own lists on demand. */
+export type WorkspaceCounts = {
+  scenes: number
+  characters: number
+  locations: number
+  world_settings: number
+  plot_threads: number
+  unresolved_threads: number
+  unresolved_major: number
+  graph_edges: number
+}
+
 export type Workspace = {
   novel: Novel
   chapters: ChapterSummary[]
-  scenes: SceneSummary[]
-  characters: Character[]
-  locations: Location[]
-  world_settings: WorldSetting[]
-  plot_threads: PlotThread[]
-  graph_edges: GraphEdge[]
+  counts: WorkspaceCounts
 }
 
 export type StorageInfo = {
@@ -210,6 +237,9 @@ export type AIContextOptions = {
   settings: boolean
   threads: boolean
   recent_chapters: number
+  /** RAG 检索增强（后端未启用 embedding 时静默跳过） */
+  prior_chapters?: boolean
+  library?: boolean
 }
 
 export type AIGenerateRequest = {
@@ -230,6 +260,13 @@ declare global {
       getBackendUrl: () => string
       getAuthToken: () => string
       chooseDataDir?: (defaultPath?: string) => Promise<string | null>
+      // Frameless-window controls (titlebar buttons).
+      windowMinimize?: () => void
+      windowToggleMaximize?: () => void
+      windowClose?: () => void
+      windowIsMaximized?: () => Promise<boolean>
+      /** Maximize-state push events from the main process (titlebar glyph). */
+      onMaximizeChanged?: (cb: (maximized: boolean) => void) => (() => void) | undefined
       // Auto-update (#10): status events from the main process; install = restart.
       onUpdateStatus?: (cb: (status: { state: string; version: string }) => void) => (() => void) | undefined
       installUpdate?: () => Promise<void>
@@ -249,11 +286,26 @@ function authHeaders(): Record<string, string> {
   return AUTH_TOKEN ? { Authorization: `Bearer ${AUTH_TOKEN}` } : {}
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...init?.headers },
-  })
+/** request() 的默认超时。AI 流式走 runAIStream（不设超时，靠 AbortController）；
+ * 上传/下载等大包路径各自显式传 timeoutMs: 0 关闭。 */
+const DEFAULT_TIMEOUT_MS = 30_000
+
+type RequestOptions = RequestInit & { timeoutMs?: number }
+
+async function request<T>(path: string, init?: RequestOptions): Promise<T> {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...fetchInit } = init ?? {}
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      ...fetchInit,
+      signal: fetchInit.signal ?? (timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined),
+      headers: { 'Content-Type': 'application/json', ...authHeaders(), ...fetchInit.headers },
+    })
+  } catch (e) {
+    // 没有超时的请求会无限挂起（后端卡死时 UI 永远转圈）——统一转成可读错误。
+    if (e instanceof DOMException && e.name === 'TimeoutError') throw new Error('请求超时，请重试', { cause: e })
+    throw e
+  }
   if (!response.ok) {
     const detail = await response.json().catch(() => null)
     throw new Error(detail?.detail ?? `请求失败（${response.status}）`)
@@ -263,17 +315,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 // ---------- SSE streaming for AI ----------
-// `signal` lets the caller abort a runaway generation (user clicks "stop").
-export async function* streamAI(
+/** Callback-style AI stream: `onChunk` receives each text delta as it arrives.
+ * Resolves when the stream completes; throws with the backend's real error
+ * message (429 / 401 / timeout…) when the stream fails.
+ *
+ * Replaces the old async-generator streamAI(): consuming a fetch
+ * ReadableStream through `for await` stalled in the packaged Chromium (the
+ * generator never resumed after its first yield), so streaming silently hung.
+ * The plain async/await loop below reads the same stream reliably. */
+export async function runAIStream(
   path: string,
   body: AIGenerateRequest,
-  signal?: AbortSignal,
-): AsyncGenerator<{ text: string; model: string }> {
+  opts: { signal?: AbortSignal; onChunk: (text: string, model: string) => void },
+): Promise<void> {
   const response = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...authHeaders() },
     body: JSON.stringify(body),
-    signal,
+    signal: opts.signal,
   })
   if (!response.ok || !response.body) {
     const detail = await response.json().catch(() => null)
@@ -293,21 +352,19 @@ export async function* streamAI(
       if (!trimmed.startsWith('data:')) continue
       const data = trimmed.slice(5).trim()
       if (data === '[DONE]') return
+      // JSON.parse isolated in its own try — a partial chunk is skipped, while
+      // backend `{"error"}` events are surfaced as real throws (no sniffing
+      // the engine's parse-error message text).
+      let parsed: { error?: unknown; text?: string; model?: string }
       try {
-        const parsed = JSON.parse(data)
-        // The backend turns upstream failures into a `{"error": "..."}` SSE
-        // event. Surface it as a throw so callers actually see *why* it failed
-        // (429 / 401 / read-timeout / 5xx) instead of a generic "no content".
-        if (parsed.error) {
-          throw new Error(typeof parsed.error === 'string' ? parsed.error : 'AI 生成失败')
-        }
-        if (parsed.text) yield { text: parsed.text, model: parsed.model ?? '' }
-      } catch (e) {
-        // Re-throw real errors (from the `if (parsed.error)` branch above);
-        // only swallow JSON parse failures of partial chunks.
-        if (e instanceof Error && e.message && !e.message.startsWith('Unexpected')) throw e
-        /* keep partial */
+        parsed = JSON.parse(data)
+      } catch {
+        continue
       }
+      if (parsed.error) {
+        throw new Error(typeof parsed.error === 'string' ? parsed.error : 'AI 生成失败')
+      }
+      if (parsed.text) opts.onChunk(parsed.text, parsed.model ?? '')
     }
   }
 }
@@ -341,33 +398,36 @@ const api = {
   // workspace / novels
   load: () => request<Workspace>('/workspace'),
   getNovel: (id: string) => request<Workspace>(`/novels/${id}`),
-  listNovels: () => request<Novel[]>('/novels'),
-  createNovel: (data: Partial<Novel>) =>
+  listNovels: () => request<Novel[]>('/novels'),  createNovel: (data: Partial<Novel>) =>
     request<Novel>('/novels', { method: 'POST', body: JSON.stringify(data) }),
   updateNovel: (id: string, data: Partial<Novel>) =>
     request<Novel>(`/novels/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteNovel: (id: string) => request<void>(`/novels/${id}`, { method: 'DELETE' }),
 
-  // chapters
+  // chapters（#2 懒加载：独立的章节元数据列表端点）
+  listChapters: (novelId: string) => request<ChapterSummary[]>(`/novels/${novelId}/chapters`),
   createChapter: (novelId: string, title: string, content = '') =>
     request<Chapter>(`/novels/${novelId}/chapters`, { method: 'POST', body: JSON.stringify({ title, content }) }),
   getChapter: (id: string) => request<Chapter>(`/chapters/${id}`),
-  updateChapter: (id: string, changes: Partial<Pick<Chapter, 'title' | 'content' | 'status'>>) =>
-    request<Chapter>(`/chapters/${id}`, { method: 'PUT', body: JSON.stringify(changes) }),
+  // init 透传（如 keepalive）供写作页的 beforeunload 兜底保存使用。
+  updateChapter: (id: string, changes: Partial<Pick<Chapter, 'title' | 'content' | 'status'>>, init?: RequestInit) =>
+    request<Chapter>(`/chapters/${id}`, { method: 'PUT', body: JSON.stringify(changes), ...init }),
   deleteChapter: (id: string) => request<void>(`/chapters/${id}`, { method: 'DELETE' }),
   listVersions: (chapterId: string) =>
     request<ChapterVersion[]>(`/chapters/${chapterId}/versions`),
   rollback: (chapterId: string, versionId: string) =>
     request<Chapter>(`/chapters/${chapterId}/rollback/${versionId}`, { method: 'POST' }),
 
-  // scenes (outline mind-map leaf nodes)
+  // scenes (outline mind-map leaf nodes；#2 懒加载独立列表端点)
+  listScenes: (novelId: string) => request<SceneSummary[]>(`/novels/${novelId}/scenes`),
   createScene: (novelId: string, chapterId: string, title: string) =>
     request<SceneSummary>(`/novels/${novelId}/chapters/${chapterId}/scenes`, { method: 'POST', body: JSON.stringify({ title }) }),
   renameScene: (id: string, title: string) =>
     request<SceneSummary>(`/scenes/${id}`, { method: 'PUT', body: JSON.stringify({ title }) }),
   deleteScene: (id: string) => request<void>(`/scenes/${id}`, { method: 'DELETE' }),
 
-  // graph edges (manual mind-map connectors)
+  // graph edges (manual mind-map connectors；#2 懒加载独立列表端点)
+  listGraphEdges: (novelId: string) => request<GraphEdge[]>(`/novels/${novelId}/graph-edges`),
   createGraphEdge: (novelId: string, kind: GraphEdge['kind'], fromId: string, toId: string, label = '') =>
     request<GraphEdge>(`/novels/${novelId}/graph-edges`, { method: 'POST', body: JSON.stringify({ kind, from_id: fromId, to_id: toId, label }) }),
   setGraphEdgeLabel: (id: string, label: string) =>
@@ -401,6 +461,27 @@ const api = {
   updateMap: (id: string, data: Partial<StoryMap>) =>
     request<StoryMap>(`/maps/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteMap: (id: string) => request<void>(`/maps/${id}`, { method: 'DELETE' }),
+  // background image — raw blob paths (not request<T>) since payloads aren't JSON.
+  // GET needs auth, so callers fetch the blob and turn it into an object URL.
+  uploadMapBackground: async (mapId: string, file: Blob, contentType: string): Promise<StoryMap> => {
+    const res = await fetch(`${API_BASE}/maps/${mapId}/background`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': contentType },
+      body: file,
+    })
+    if (!res.ok) {
+      const detail = await res.json().catch(() => null)
+      throw new Error(detail?.detail ?? `上传失败（${res.status}）`)
+    }
+    return res.json()
+  },
+  getMapBackground: async (mapId: string): Promise<Blob> => {
+    const res = await fetch(`${API_BASE}/maps/${mapId}/background`, { headers: authHeaders() })
+    if (!res.ok) throw new Error('No background')
+    return res.blob()
+  },
+  deleteMapBackground: (mapId: string) =>
+    request<StoryMap>(`/maps/${mapId}/background`, { method: 'DELETE' }),
   listTerrains: (mapId: string) => request<Terrain[]>(`/maps/${mapId}/terrains`),
   createTerrain: (mapId: string, data: Partial<Terrain>) =>
     request<Terrain>(`/maps/${mapId}/terrains`, { method: 'POST', body: JSON.stringify(data) }),
@@ -413,6 +494,8 @@ const api = {
     request<Stroke>(`/maps/${mapId}/strokes`, { method: 'POST', body: JSON.stringify(data) }),
   undoLastStroke: (mapId: string) => request<void>(`/maps/${mapId}/strokes/last`, { method: 'DELETE' }),
   clearStrokes: (mapId: string) => request<void>(`/maps/${mapId}/strokes`, { method: 'DELETE' }),
+  deleteStrokesByColor: (mapId: string, color: string) =>
+    request<{ deleted: number }>(`/maps/${mapId}/strokes/by-color?color=${encodeURIComponent(color)}`, { method: 'DELETE' }),
 
   // world settings
   listSettings: (novelId: string) => request<WorldSetting[]>(`/novels/${novelId}/settings`),
@@ -458,34 +541,74 @@ const api = {
   testAIConfig: (id: number, data?: { model?: string; base_url?: string; api_key?: string }) =>
     request<{ ok: boolean; detail: string; model?: string }>(`/ai/configs/${id}/test`, {
       method: 'POST',
+      timeoutMs: 90_000,
       body: JSON.stringify(data ?? {}),
     }),
   /** Fetch the provider's model list (with context windows) via the backend. */
   listAIModels: (data: { base_url?: string; api_key?: string; config_id?: number }) =>
     request<{ ok: boolean; detail: string; models?: { id: string; context_length: number | null }[] }>(`/ai/models`, {
       method: 'POST',
+      timeoutMs: 90_000,
       body: JSON.stringify(data),
     }),
   /** Export the active config (key decrypted server-side) into the .env file. */
   exportAIEnv: () =>
     request<{ ok: boolean; detail: string; path?: string }>(`/ai/export-env`, { method: 'POST' }),
+  // ── RAG / 资料库（RAG设计方案.md）──
+  ragStatus: () => request<{
+    enabled: boolean; embed_model: string;
+    chunks: { total: number; chapter: number; library: number; pending: number };
+    stale_model_chunks: number;
+  }>('/rag/status'),
+  // 重建 = 全量重切 + 批量 embedding，大库耗时以分钟计。
+  ragRebuild: () => request<{ chunks: number; pending: number }>('/rag/rebuild', { method: 'POST', timeoutMs: 600_000 }),
+  ragTestSearch: (query: string, novelId?: string | null, sourceTypes?: string[]) =>
+    request<{
+      enabled: boolean; embed_model?: string; detail?: string;
+      results: { title: string; source_type: string; text: string; score: number }[];
+    }>('/rag/test-search', {
+      method: 'POST',
+      timeoutMs: 90_000,
+      body: JSON.stringify({ query, novel_id: novelId ?? null, source_types: sourceTypes ?? ['chapter', 'library'] }),
+    }),
+  listLibraryDocs: () => request<LibraryDoc[]>('/library/docs'),
+  /** RAG 独立配置（与写作模型解耦）读写与连通测试。 */
+  getRagConfig: () => request<{ configured: boolean; model: string; base_url: string; has_key: boolean; key_hint: string }>('/rag/config'),
+  saveRagConfig: (data: { model?: string; base_url?: string; api_key?: string | null }) =>
+    request<{ configured: boolean; model: string; base_url: string; has_key: boolean; key_hint: string }>('/rag/config', {
+      method: 'PUT', body: JSON.stringify(data),
+    }),
+  testRagConfig: (data?: { model?: string; base_url?: string; api_key?: string }) =>
+    request<{ ok: boolean; detail: string; dim?: number }>('/rag/config/test', {
+      method: 'POST', timeoutMs: 90_000, body: JSON.stringify(data ?? {}),
+    }),
+  importLibraryDoc: (data: { name: string; content: string; category?: string; novel_id?: string | null }) =>
+    request<LibraryDoc>('/library/docs', { method: 'POST', timeoutMs: 600_000, body: JSON.stringify(data) }),
+  deleteLibraryDoc: (id: number) => request<void>(`/library/docs/${id}`, { method: 'DELETE' }),
   aiModels: () =>
     request<{ active: AIConfig | null; configs: AIConfig[]; provider: string; offline_fallback: boolean }>('/ai/models'),
+  /** 3 AI-suggested continuation directions for the current chapter (+fallback). */
+  aiDirections: (novelId: string, chapterId?: string | null) =>
+    request<{ directions: { title: string; desc: string }[]; source: 'ai' | 'fallback' }>(
+      '/ai/directions',
+      { method: 'POST', timeoutMs: 120_000, body: JSON.stringify({ novel_id: novelId, chapter_id: chapterId ?? null }) },
+    ),
   suggestThreads: (novelId: string) =>
     request<{ suggestions: { thread_id: string; title: string; priority: string; advice: string }[]; unresolved_count: number }>(
       '/ai/suggest-threads',
-      { method: 'POST', body: JSON.stringify({ novel_id: novelId }) },
+      { method: 'POST', timeoutMs: 120_000, body: JSON.stringify({ novel_id: novelId }) },
     ),
   checkConsistency: (novelId: string) =>
     request<{ findings: { level: string; message: string }[]; unresolved: number; chapters: number }>(
       '/ai/check-consistency',
-      { method: 'POST', body: JSON.stringify({ novel_id: novelId }) },
+      { method: 'POST', timeoutMs: 120_000, body: JSON.stringify({ novel_id: novelId }) },
     ),
 
   // search + export
   search: (novelId: string, q: string) =>
-    request<{ chapters: { id: string; title: string; order: number; word_count: number }[]; characters: { id: string; name: string; role: string }[]; threads: { id: string; title: string; status: string }[]; total: number }>(
+    request<{ semantic: boolean; chapters: { id: string; title: string; order: number; word_count: number; snippet: string; score: number; semantic: boolean }[]; characters: { id: string; name: string; role: string }[]; threads: { id: string; title: string; status: string }[]; total: number }>(
       `/novels/${novelId}/search?q=${encodeURIComponent(q)}`,
+      { timeoutMs: 90_000 },
     ),
   /** Daily writing activity for the heatmap / week bars on the overview page. */
   activity: (novelId: string, days = 119) =>

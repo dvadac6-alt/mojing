@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { workspaceApi, type Workspace } from '../workspaceApi'
+import { toast } from '../components/Toast'
 
 /** Owns the active workspace: loads it on mount, exposes reload/patch/switch,
  * and tracks a load-error string the shell renders when the backend is down. */
@@ -28,7 +29,10 @@ export function useWorkspace() {
     try {
       const data = await workspaceApi.getNovel(id)
       setWorkspace(data)
-    } catch { /* keep current */ }
+    } catch (e) {
+      // 用户点了书却没反应是最迷惑的失败方式——给出可见的错误提示。
+      toast.error(e instanceof Error ? e.message : '切换作品失败')
+    }
   }, [])
 
   const retry = useCallback(() => setReloadKey(k => k + 1), [])

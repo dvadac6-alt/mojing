@@ -1,54 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, FileText, GitBranch, GripVertical, Link2, MoreHorizontal, Plus } from 'lucide-react'
-import type { Character, GraphEdge, PlotThread, Workspace } from '../workspaceApi'
+import type { Character, PlotThread, Workspace } from '../workspaceApi'
 import { workspaceApi } from '../workspaceApi'
-import { Button, Field, Modal, PageHeader, Scroll } from '../components/ui'
+import { Button, Field, FormFooter, Modal, PageHeader, Scroll } from '../components/ui'
 import { MindMap } from '../components/MindMap'
 import { GraphCanvas } from '../components/GraphCanvas'
 import { EdgeOverlay } from '../components/EdgeOverlay'
-
-type GraphKind = 'chapters' | 'threads' | 'characters'
+import { useEntityList } from '../hooks/useEntityList'
+import { buildEdges, type GraphKind } from '../lib/graph'
 
 const THREAD_STATUS_LABEL: Record<string, string> = { planted: '已埋设', hinted: '已暗示', developing: '发展中', resolved: '已收束' }
 const THREAD_PRIORITY_LABEL: Record<string, string> = { major: '主线', minor: '支线', detail: '细节' }
 
-/** Auto-derived (read-only) + manual (stored) edges merged for EdgeOverlay. */
-function buildEdges(kind: GraphKind, workspace: Workspace) {
-  const auto: { key: string; from: string; to: string; label?: string; kind: 'auto' }[] = []
-  if (kind === 'threads') {
-    const ids = new Set(workspace.plot_threads.map(t => t.id))
-    for (const t of workspace.plot_threads) {
-      for (const rid of t.related_threads ?? []) {
-        if (ids.has(rid)) auto.push({ key: `a:${t.id}-${rid}`, from: t.id, to: rid, kind: 'auto' })
-      }
-    }
-  } else if (kind === 'characters') {
-    const byChar = new Map<string, Set<string>>()
-    for (const t of workspace.plot_threads) {
-      for (const cid of t.related_characters ?? []) {
-        const s = byChar.get(cid) ?? new Set<string>(); s.add(t.id); byChar.set(cid, s)
-      }
-    }
-    const cs = workspace.characters
-    for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) {
-      const a = byChar.get(cs[i].id), b = byChar.get(cs[j].id)
-      if (a && b && [...a].some(t => b.has(t))) auto.push({ key: `a:${cs[i].id}-${cs[j].id}`, from: cs[i].id, to: cs[j].id, label: '共同伏笔', kind: 'auto' })
-    }
-  }
-  const manual = workspace.graph_edges
-    .filter(e => e.kind === kind)
-    .map(e => ({ key: `m:${e.id}`, id: e.id, from: e.from_id, to: e.to_id, label: e.label, kind: 'manual' as const }))
-  return [...auto, ...manual]
-}
-
 /** Plot-thread mind map: threads as ring nodes, edges from related_threads. */
 function ThreadGraph({ threads, linkingMode, onPickNode }: { threads: PlotThread[]; linkingMode?: boolean; onPickNode?: (id: string) => void }) {
-  const nodes = threads.map(t => ({
+  const nodes = useMemo(() => threads.map(t => ({
     id: t.id, title: t.title,
     sub: `${THREAD_PRIORITY_LABEL[t.priority] ?? t.priority} · ${THREAD_STATUS_LABEL[t.status] ?? t.status}`, tone: t.status,
-  }))
-  const ids = new Set(threads.map(t => t.id))
-  const edges = threads.flatMap(t => (t.related_threads ?? []).filter(id => ids.has(id)).map(id => ({ from: t.id, to: id })))
+  })), [threads])
+  const edges = useMemo(() => {
+    const ids = new Set(threads.map(t => t.id))
+    return threads.flatMap(t => (t.related_threads ?? []).filter(id => ids.has(id)).map(id => ({ from: t.id, to: id })))
+  }, [threads])
   return <GraphCanvas nodes={nodes} edges={edges} empty="还没有伏笔，去伏笔看板创建后这里会展示关系网。"
     legend={Object.entries(THREAD_STATUS_LABEL).map(([tone, label]) => ({ label, tone }))}
     linkingMode={linkingMode} onPickNode={onPickNode} />
@@ -57,23 +30,35 @@ function ThreadGraph({ threads, linkingMode, onPickNode }: { threads: PlotThread
 /** Character mind map: characters as ring nodes; an edge when two characters
  *  share at least one plot thread. */
 function CharacterGraph({ characters, threads, linkingMode, onPickNode }: { characters: Character[]; threads: PlotThread[]; linkingMode?: boolean; onPickNode?: (id: string) => void }) {
-  const nodes = characters.map(c => ({ id: c.id, title: c.name, sub: c.role || c.aliases || '角色' }))
-  const threadsByChar = new Map<string, Set<string>>()
-  for (const t of threads) for (const cid of t.related_characters ?? []) {
-    const set = threadsByChar.get(cid) ?? new Set<string>(); set.add(t.id); threadsByChar.set(cid, set)
-  }
-  const edges: { from: string; to: string }[] = []
-  for (let i = 0; i < characters.length; i++) for (let j = i + 1; j < characters.length; j++) {
-    const a = threadsByChar.get(characters[i].id), b = threadsByChar.get(characters[j].id)
-    if (a && b && [...a].some(t => b.has(t))) edges.push({ from: characters[i].id, to: characters[j].id })
-  }
+  const nodes = useMemo(() => characters.map(c => ({ id: c.id, title: c.name, sub: c.role || c.aliases || '角色' })), [characters])
+  const edges = useMemo(() => {
+    const threadsByChar = new Map<string, Set<string>>()
+    for (const t of threads) for (const cid of t.related_characters ?? []) {
+      const set = threadsByChar.get(cid) ?? new Set<string>(); set.add(t.id); threadsByChar.set(cid, set)
+    }
+    const out: { from: string; to: string }[] = []
+    for (let i = 0; i < characters.length; i++) for (let j = i + 1; j < characters.length; j++) {
+      const a = threadsByChar.get(characters[i].id), b = threadsByChar.get(characters[j].id)
+      if (a && b && [...a].some(t => b.has(t))) out.push({ from: characters[i].id, to: characters[j].id })
+    }
+    return out
+  }, [characters, threads])
   return <GraphCanvas nodes={nodes} edges={edges} empty="还没有角色，去角色页创建后这里会展示关系网。"
     legend={[{ label: '共同伏笔', tone: 'shared' }]}
     linkingMode={linkingMode} onPickNode={onPickNode} />
 }
 
-export function OutlinePage({ workspace, reload }: { workspace: Workspace; reload: () => void }) {
-  const rows = workspace.chapters.map(c => [
+export function OutlinePage({ workspace, reload }: { workspace: Workspace; reload: () => Promise<void> }) {
+  const novelId = workspace.novel.id
+  // #2 懒加载：场景/连线/伏笔/角色按需拉取 + 缓存；章节元数据在瘦身后的
+  // workspace 里（章节变更低频，走一次轻量 reload 同步目录与计数）。
+  const { items: scenes, patch: patchScenes, refresh: refreshScenes } = useEntityList('scenes', novelId, workspaceApi.listScenes)
+  const { items: graphEdges, patch: patchGraphEdges } = useEntityList('graph-edges', novelId, workspaceApi.listGraphEdges)
+  const { items: threads } = useEntityList('plot-threads', novelId, workspaceApi.listThreads)
+  const { items: characters } = useEntityList('characters', novelId, workspaceApi.listCharacters)
+  const { novel, chapters } = workspace
+
+  const rows = chapters.map(c => [
     c.title,
     c.word_count > 0 ? `${c.word_count} 字` : '（空白章节）',
     c.status === 'completed' ? '已完成' : c.status === 'writing' ? '写作中' : '草稿',
@@ -94,7 +79,8 @@ export function OutlinePage({ workspace, reload }: { workspace: Workspace; reloa
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null)
   const stageRef = useRef<HTMLDivElement>(null)
 
-  const renderEdges = useMemo(() => buildEdges(graph, workspace), [graph, workspace])
+  const entityData = useMemo(() => ({ plot_threads: threads, characters, graph_edges: graphEdges }), [threads, characters, graphEdges])
+  const renderEdges = useMemo(() => buildEdges(graph, entityData), [graph, entityData])
 
   // Exit linking whenever leaving the mind-map view or switching graphs.
   useEffect(() => { setLinking(false); setLinkFrom(null); setSelectedEdge(null) }, [view, graph])
@@ -115,7 +101,7 @@ export function OutlinePage({ workspace, reload }: { workspace: Workspace; reloa
     if (id === linkFrom) { setLinkFrom(null); return }
     // Skip if an edge already exists either way.
     const exists = renderEdges.some(e => (e.from === linkFrom && e.to === id) || (e.from === id && e.to === linkFrom))
-    if (!exists) void workspaceApi.createGraphEdge(workspace.novel.id, graph, linkFrom, id).then(reload)
+    if (!exists) void workspaceApi.createGraphEdge(novelId, graph, linkFrom, id).then(saved => patchGraphEdges(prev => [...prev, saved]))
     setLinkFrom(null)
   }
 
@@ -123,9 +109,15 @@ export function OutlinePage({ workspace, reload }: { workspace: Workspace; reloa
     if (!title.trim() || busy) return
     setBusy(true)
     try {
-      if (nodeType === 'chapter') await workspaceApi.createChapter(workspace.novel.id, title.trim())
-      else { if (!chapterId) return; await workspaceApi.createScene(workspace.novel.id, chapterId, title.trim()) }
-      setAdding(false); setTitle(''); reload()
+      if (nodeType === 'chapter') await workspaceApi.createChapter(novelId, title.trim())
+      else {
+        if (!chapterId) return
+        const saved = await workspaceApi.createScene(novelId, chapterId, title.trim())
+        patchScenes(prev => [...prev, saved])
+        void reload()  // 场景计数显示在摘要栏
+      }
+      setAdding(false); setTitle('')
+      if (nodeType === 'chapter') reload()
     } finally { setBusy(false) }
   }
 
@@ -135,7 +127,7 @@ export function OutlinePage({ workspace, reload }: { workspace: Workspace; reloa
     <Button onClick={() => setView(v => v === 'mind' ? 'list' : 'mind')} kind={view === 'mind' ? 'primary' : 'secondary'}><GitBranch size={15} />思维导图</Button>
     <Button kind="primary" onClick={() => setAdding(true)}><Plus size={15} />添加节点</Button>
   </>} />
-    <div className="outline-summary"><span><strong>1</strong>卷</span><span><strong>{workspace.chapters.length}</strong>章节</span><span><strong>{workspace.scenes.length}</strong>场景</span><div><p>整体规划 <b>{Math.min(100, Math.round((workspace.novel.total_words / workspace.novel.target_words) * 100))}%</b></p><i><em /></i></div></div>
+    <div className="outline-summary"><span><strong>1</strong>卷</span><span><strong>{chapters.length}</strong>章节</span><span><strong>{workspace.counts.scenes}</strong>场景</span><div><p>整体规划 <b>{Math.min(100, Math.round((novel.total_words / novel.target_words) * 100))}%</b></p><i><em /></i></div></div>
     {view === 'mind'
       ? <>
         <div className="mindmap-switch">
@@ -149,31 +141,32 @@ export function OutlinePage({ workspace, reload }: { workspace: Workspace; reloa
         </div>
         {linking && <div className="link-hint">{linkHint || '点击节点开始连线，双击连线可添加介绍文字'}</div>}
         <div className="graph-stage" ref={stageRef}>
-          {graph === 'chapters' && <MindMap workspace={workspace} reload={reload} linkingMode={linking} onPickNode={pickNode} />}
-          {graph === 'threads' && <section className="graph-panel"><ThreadGraph threads={workspace.plot_threads} linkingMode={linking} onPickNode={pickNode} /></section>}
-          {graph === 'characters' && <section className="graph-panel"><CharacterGraph characters={workspace.characters} threads={workspace.plot_threads} linkingMode={linking} onPickNode={pickNode} /></section>}
+          {graph === 'chapters' && <MindMap novel={novel} chapters={chapters} scenes={scenes} reload={reload} refreshScenes={() => void refreshScenes()} linkingMode={linking} onPickNode={pickNode} />}
+          {graph === 'threads' && <section className="graph-panel"><ThreadGraph threads={threads} linkingMode={linking} onPickNode={pickNode} /></section>}
+          {graph === 'characters' && <section className="graph-panel"><CharacterGraph characters={characters} threads={threads} linkingMode={linking} onPickNode={pickNode} /></section>}
           <EdgeOverlay containerRef={stageRef} edges={renderEdges} linkingFrom={linkFrom} selectedEdgeId={selectedEdge}
             onSelectEdge={setSelectedEdge}
-            onEditLabel={(e, label) => void workspaceApi.setGraphEdgeLabel(e.id, label).then(reload)}
-            onDeleteEdge={e => void workspaceApi.deleteGraphEdge(e.id).then(() => { setSelectedEdge(null); reload() })} />
+            onEditLabel={(e, label) => void workspaceApi.setGraphEdgeLabel(e.id, label).then(saved => patchGraphEdges(prev => prev.map(x => (x.id === saved.id ? saved : x))))}
+            onDeleteEdge={e => void workspaceApi.deleteGraphEdge(e.id).then(() => { setSelectedEdge(null); patchGraphEdges(prev => prev.filter(x => x.id !== e.id)) })} />
         </div>
       </>
       : <section className="outline-table"><header><span>结构与标题</span><span>情节摘要</span><span>状态</span></header>{rows.length === 0
         ? <div className="panel-empty">还没有章节，点击右上角「添加节点」创建第一个章节</div>
-        : rows.map((r, i) => <div className={r[3]} key={workspace.chapters[i].id}><span><GripVertical size={13} /><ChevronDown size={13} /><FileText size={14} /><strong>{String(i + 1).padStart(2, '0')} {r[0]}</strong></span><p>{r[1]}</p><em>{r[2]}</em><button><MoreHorizontal size={15} /></button></div>)}</section>}
+        : rows.map((r, i) => <div className={r[3]} key={chapters[i].id}><span><GripVertical size={13} /><ChevronDown size={13} /><FileText size={14} /><strong>{String(i + 1).padStart(2, '0')} {r[0]}</strong></span><p>{r[1]}</p><em>{r[2]}</em><button aria-label="更多操作"><MoreHorizontal size={15} /></button></div>)}</section>}
     {adding && <Modal eyebrow="大纲" title="添加节点" icon={GitBranch} onClose={() => setAdding(false)}
-      footer={<div className="form-actions"><span className="muted">{nodeType === 'chapter' ? '新章节将追加到章节列表末尾' : '场景归属于所选章节'}</span><Button onClick={() => setAdding(false)}>取消</Button><Button kind="primary" onClick={submit} disabled={busy || !title.trim()}>{busy ? '添加中…' : '添加'}</Button></div>}>
+      footer={<FormFooter busy={busy} onClose={() => setAdding(false)} onSubmit={submit}
+        submitLabel="添加" busyLabel="添加中…" submitDisabled={!title.trim()} note={nodeType === 'chapter' ? '新章节将追加到章节列表末尾' : '场景归属于所选章节'} />}>
       <div className="form-body">
         <Field label="节点类型">
           <div className="segments">
             <button className={nodeType === 'chapter' ? 'active' : ''} onClick={() => setNodeType('chapter')}>章节</button>
-            <button className={nodeType === 'scene' ? 'active' : ''} disabled={workspace.chapters.length === 0}
-              onClick={() => { setNodeType('scene'); if (!chapterId) setChapterId(workspace.chapters[0]?.id ?? '') }}>场景</button>
+            <button className={nodeType === 'scene' ? 'active' : ''} disabled={chapters.length === 0}
+              onClick={() => { setNodeType('scene'); if (!chapterId) setChapterId(chapters[0]?.id ?? '') }}>场景</button>
           </div>
         </Field>
         {nodeType === 'scene' && <Field label="所属章节">
           <select value={chapterId} onChange={e => setChapterId(e.target.value)}>
-            {workspace.chapters.map(c => <option key={c.id} value={c.id}>{String(c.order).padStart(2, '0')} {c.title}</option>)}
+            {chapters.map(c => <option key={c.id} value={c.id}>{String(c.order).padStart(2, '0')} {c.title}</option>)}
           </select>
         </Field>}
         <Field label="标题"><input autoFocus value={title} onChange={e => setTitle(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder={nodeType === 'chapter' ? '如：雨夜来客' : '如：雨夜叩门'} /></Field>

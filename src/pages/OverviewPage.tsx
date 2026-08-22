@@ -9,55 +9,57 @@ import { fmt } from '../lib/constants'
 import { Button, PageHeader, PanelTitle, Scroll } from '../components/ui'
 import { ActivityCalendar, type ActivityData } from '../components/ActivityCalendar'
 import { UsagePanel, type UsageData } from '../components/UsagePanel'
+import { useEntityList } from '../hooks/useEntityList'
+import { weekWords } from '../lib/stats'
 
 const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
 
-/** Sum the activity series into the current week's per-day word counts (Mon→Sun). */
-function weekWords(series: { date: string; words: number }[]): number[] {
-  const today = new Date()
-  // Monday as the first day of the week.
-  const mondayOffset = (today.getDay() + 6) % 7
-  const monday = new Date(today)
-  monday.setDate(today.getDate() - mondayOffset)
-  const byDate = new Map(series.map(d => [d.date, d.words]))
-  const out = [0, 0, 0, 0, 0, 0, 0]
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(monday)
-    d.setDate(monday.getDate() + i)
-    if (d > today) break
-    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-    out[i] = byDate.get(iso) ?? 0
-  }
-  return out
+// 60s 时间窗缓存：概览页每次挂载都重拉两组统计，切页往返时纯属浪费。
+// 按作品 id 缓存；数据写回时（保存章节）下次进入窗口外自然刷新。
+type CacheEntry<T> = { at: number; data: T }
+const STATS_CACHE_TTL = 60_000
+const _activityCache = new Map<string, CacheEntry<ActivityData>>()
+const _usageCache = new Map<string, CacheEntry<UsageData>>()
+
+function readCache<T>(cache: Map<string, CacheEntry<T>>, key: string): T | null {
+  const hit = cache.get(key)
+  return hit && Date.now() - hit.at < STATS_CACHE_TTL ? hit.data : null
 }
 
+
 export function OverviewPage({ workspace, onWrite, onGoto }: { workspace: Workspace; onWrite: () => void; onGoto: (p: Page) => void }) {
-  const { novel, chapters, plot_threads } = workspace
+  const { novel, chapters } = workspace
+  // #2 懒加载：伏笔按需拉取（"需要留意"面板需要未收束明细）。
+  const { items: plot_threads } = useEntityList('plot-threads', novel.id, workspaceApi.listThreads)
   const unresolved = plot_threads.filter(t => t.status !== 'resolved')
   const unresolvedMajor = unresolved.filter(t => t.priority === 'major')
   const emptyChapters = chapters.filter(c => c.word_count === 0)
   const progress = novel.target_words > 0 ? Math.min(100, Math.round((novel.total_words / novel.target_words) * 100)) : 0
   const recent = [...chapters].slice(-6).reverse()
 
-  const [activity, setActivity] = useState<ActivityData | null>(null)
-  const [actLoading, setActLoading] = useState(true)
+  const [activity, setActivity] = useState<ActivityData | null>(() => readCache(_activityCache, novel.id))
+  const [actLoading, setActLoading] = useState(() => readCache(_activityCache, novel.id) === null)
   useEffect(() => {
     let cancelled = false
+    const cached = readCache(_activityCache, novel.id)
+    if (cached) { setActivity(cached); setActLoading(false); return }
     setActLoading(true)
     workspaceApi.activity(novel.id, 119)
-      .then(d => { if (!cancelled) setActivity(d) })
+      .then(d => { if (!cancelled) { setActivity(d); _activityCache.set(novel.id, { at: Date.now(), data: d }) } })
       .catch(() => { /* heatmap is non-critical; leave empty */ })
       .finally(() => { if (!cancelled) setActLoading(false) })
     return () => { cancelled = true }
   }, [novel.id])
 
-  const [usage, setUsage] = useState<UsageData | null>(null)
-  const [usageLoading, setUsageLoading] = useState(true)
+  const [usage, setUsage] = useState<UsageData | null>(() => readCache(_usageCache, novel.id))
+  const [usageLoading, setUsageLoading] = useState(() => readCache(_usageCache, novel.id) === null)
   useEffect(() => {
     let cancelled = false
+    const cached = readCache(_usageCache, novel.id)
+    if (cached) { setUsage(cached); setUsageLoading(false); return }
     setUsageLoading(true)
     workspaceApi.aiUsage(novel.id, 30)
-      .then(d => { if (!cancelled) setUsage(d) })
+      .then(d => { if (!cancelled) { setUsage(d); _usageCache.set(novel.id, { at: Date.now(), data: d }) } })
       .catch(() => { /* usage is non-critical; leave empty */ })
       .finally(() => { if (!cancelled) setUsageLoading(false) })
     return () => { cancelled = true }

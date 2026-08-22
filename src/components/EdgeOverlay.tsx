@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import type { GraphEdge } from '../workspaceApi'
 
@@ -29,7 +29,16 @@ function useNodePositions(containerRef: React.RefObject<HTMLElement | null>) {
       const r = el.getBoundingClientRect()
       next[id] = { x: r.left - cr.left + r.width / 2, y: r.top - cr.top + r.height / 2 }
     })
-    setPos(next)
+    // 坐标（亚像素级）没变就不 setState：滚动时每帧 measure 都会产出
+    // 全新对象，直接 set 会让整层 SVG 无意义地重渲染。
+    setPos(prev => {
+      const ids = Object.keys(next)
+      if (ids.length === Object.keys(prev).length
+        && ids.every(k => prev[k] && Math.abs(prev[k]!.x - next[k].x) < 0.5 && Math.abs(prev[k]!.y - next[k].y) < 0.5)) {
+        return prev
+      }
+      return next
+    })
   }
   useLayoutEffect(measure, [])
   useEffect(() => {
@@ -38,11 +47,14 @@ function useNodePositions(containerRef: React.RefObject<HTMLElement | null>) {
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     el.querySelectorAll('[data-node-id]').forEach(n => ro.observe(n))
-    el.addEventListener('scroll', measure)
-    window.addEventListener('resize', measure)
+    // rAF 节流：滚动事件每帧触发，测量本身也要读布局，直接连测会掉帧。
+    let raf = 0
+    const onScroll = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(measure) }
+    el.addEventListener('scroll', onScroll)
+    window.addEventListener('resize', onScroll)
     // Late re-measure after fonts/images settle.
     const t = setTimeout(measure, 120)
-    return () => { ro.disconnect(); el.removeEventListener('scroll', measure); window.removeEventListener('resize', measure); clearTimeout(t) }
+    return () => { ro.disconnect(); cancelAnimationFrame(raf); el.removeEventListener('scroll', onScroll); window.removeEventListener('resize', onScroll); clearTimeout(t) }
   }, [containerRef])
   return pos
 }

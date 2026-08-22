@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master, main]
   pull_request:
 
 jobs:
@@ -12,11 +12,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
+      # 前端逻辑测试（node:test + 类型剥离，无额外依赖）
+      - run: npm run test:ui
+      - run: npm run build
 
   backend:
     runs-on: windows-latest

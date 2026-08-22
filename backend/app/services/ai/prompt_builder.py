@@ -61,6 +61,7 @@ def build_messages(
     target_words: int,
     context: AIContextOptions,
     current_content: str = "",
+    rag_chunks: list | None = None,
 ) -> list[dict[str, str]]:
     characters = list(database.scalars(select(Character).where(Character.novel_id == novel.id)).all())
     locations = list(database.scalars(select(Location).where(Location.novel_id == novel.id)).all())
@@ -76,6 +77,16 @@ def build_messages(
         sections.append("## 世界观设定参考\n" + _settings_block(settings))
     if context.threads:
         sections.append("## 活跃伏笔（请在合适时机自然收回，不要强行解释）\n" + _threads_block(threads))
+    # ── RAG 检索片段注入（RAG设计方案.md §五）：插在伏笔之后、剧情摘要之前 ──
+    if rag_chunks:
+        prior = [c for c in rag_chunks if c.get("kind") == "chapter"]
+        refs = [c for c in rag_chunks if c.get("kind") == "library"]
+        if prior:
+            lines = "\n\n".join(f"【{c['title']}】\n{c['text']}" for c in prior)
+            sections.append("## 前文相关片段（与当前情节相关的历史正文，写作时请保持一致，不要矛盾）\n" + lines)
+        if refs:
+            lines = "\n\n".join(f"【{c['title']}】\n{c['text']}" for c in refs)
+            sections.append("## 参考资料片段（外部素材，仅供知识与文风参考，不要照抄）\n" + lines)
     sections.append("## 最近剧情（前文摘要）\n" + _recent_chapter_summary(database, novel.id, context.recent_chapters))
 
     system = (

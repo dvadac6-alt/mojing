@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import type { ElementType, ReactNode } from 'react'
 import { ChevronRight, Plus, Search, X } from 'lucide-react'
 
@@ -21,7 +22,7 @@ export function PanelTitle({ title, action, onAction }: { title: string; action?
 }
 
 export function PaneHead({ eyebrow, title, onAdd }: { eyebrow: string; title: string; onAdd?: () => void }) {
-  return <div className="pane-title"><div><label>{eyebrow}</label><strong>{title}</strong></div><button onClick={onAdd}><Plus size={15} /></button></div>
+  return <div className="pane-title"><div><label>{eyebrow}</label><strong>{title}</strong></div><button onClick={onAdd} aria-label={`新建${title}`}><Plus size={15} /></button></div>
 }
 
 export function Detail({ title, wide, children }: { title: string; wide?: boolean; children: ReactNode }) {
@@ -38,6 +39,12 @@ export function EmptyState({ icon: Icon, title, desc, action }: { icon: ElementT
 
 export function Modal({ eyebrow, title, icon, onClose, children, footer, wide }: { eyebrow: string; title: string; icon: ElementType; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean }) {
   const Icon = icon
+  // Esc 关闭弹窗（键盘可达性）。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
   return <div className="form-modal" onMouseDown={onClose}><div className={'form-dialog' + (wide ? ' wide' : '')} onMouseDown={e => e.stopPropagation()}>
     <div className="form-head"><span className="form-icon"><Icon size={18} /></span><div><label>{eyebrow}</label><h2>{title}</h2></div><button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button></div>
     {children}
@@ -47,6 +54,21 @@ export function Modal({ eyebrow, title, icon, onClose, children, footer, wide }:
 
 export function Field({ label, children }: { label: string; children: ReactNode }) {
   return <label className="form-field"><span>{label}</span>{children}</label>
+}
+
+/** 表单弹窗统一底栏：说明文案 / 附加按钮 / 错误 / 取消 / 提交。
+ *  各页面表单此前复制粘贴同一骨架 ×8，按钮与错误位的排布从此单点维护。 */
+export function FormFooter({ error, busy, onClose, onSubmit, submitLabel = '保存', busyLabel = '保存中…', note, extra, submitDisabled }: {
+  error?: string; busy?: boolean; onClose: () => void; onSubmit: () => void
+  submitLabel?: string; busyLabel?: string; note?: ReactNode; extra?: ReactNode; submitDisabled?: boolean
+}) {
+  return <div className="form-actions">
+    {note && <span className="muted">{note}</span>}
+    {extra}
+    {error && <span className="form-error">{error}</span>}
+    <Button onClick={onClose}>取消</Button>
+    <Button kind="primary" onClick={onSubmit} disabled={busy || submitDisabled}>{busy ? busyLabel : submitLabel}</Button>
+  </div>
 }
 
 /** Empty-state wrapper used by master/detail pages when a section has no data. */

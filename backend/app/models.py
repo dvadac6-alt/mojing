@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Integer, JSON, String, Text, func
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -43,6 +43,8 @@ class Novel(Base):
     genre: Mapped[str] = mapped_column(String(50), default="", nullable=False)
     target_words: Mapped[int] = mapped_column(Integer, default=200_000, nullable=False)
     status: Mapped[NovelStatus] = mapped_column(Enum(NovelStatus), default=NovelStatus.WRITING, nullable=False)
+    # F11 文风画像：analyze_style 的结果 JSON；存在时续写 prompt 注入文风约束。
+    style_profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -84,6 +86,10 @@ class Chapter(Base):
     order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     word_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     status: Mapped[ChapterStatus] = mapped_column(Enum(ChapterStatus), default=ChapterStatus.DRAFT, nullable=False)
+    # ── F1 章节摘要链：AI 生成/手写的剧情摘要。滚动前情提要（续写上下文注入）
+    #    的数据源；summary_updated_at 用于判断"正文在摘要之后又改过"（过期提示）。
+    summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    summary_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -368,6 +374,26 @@ class PlotThread(Base):
     novel: Mapped[Novel] = relationship(back_populates="plot_threads")
 
 
+class CharacterAppearance(Base):
+    """F2 角色登场追踪：章节保存时扫描正文命中的角色名/别名（含 Character.aliases
+    顿号分隔项），一章一角色一行。空窗章数（距最新章）由查询时按章节 order 计算。"""
+
+    __tablename__ = "character_appearances"
+
+    __table_args__ = (
+        Index("ix_character_appearances_novel", "novel_id"),
+        Index("ix_character_appearances_chapter", "chapter_id"),
+        UniqueConstraint("character_id", "chapter_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    novel_id: Mapped[str] = mapped_column(String(36), ForeignKey("novels.id", ondelete="CASCADE"), nullable=False)
+    character_id: Mapped[str] = mapped_column(String(36), ForeignKey("characters.id", ondelete="CASCADE"), nullable=False)
+    chapter_id: Mapped[str] = mapped_column(String(36), ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False)
+    hits: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class AIConfig(Base):
     __tablename__ = "ai_config"
 
@@ -403,6 +429,21 @@ class RagConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class WebDavConfig(Base):
+    """F12 WebDAV 备份配置（单例行，id=1）。密码用 ai_config 同款加密存储；
+    keep = 远端保留份数（超出轮换删除）。"""
+
+    __tablename__ = "webdav_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    url: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    username: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    password: Mapped[str] = mapped_column(String(255), default="", nullable=False)  # 加密存储
+    keep: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class DocumentChunk(Base):
     """RAG 索引块：正文章节与资料库共用。embedding 为 float32 数组序列化的 BLOB；
     NULL 表示待向量化（API 失败时落库，下次保存补齐）。"""
@@ -431,6 +472,69 @@ class LibraryDoc(Base):
     source: Mapped[str] = mapped_column(String(20), default="txt", nullable=False)
     size_chars: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class Idea(Base):
+    """F5 灵感收集箱：随手记的碎片想法，可一键转化为角色/伏笔/章节。
+    novel_id 为空 = 全局灵感（不属于任何作品，转化时再指定目标）。"""
+
+    __tablename__ = "ideas"
+
+    __table_args__ = (
+        Index("ix_ideas_novel_status", "novel_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    novel_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("novels.id", ondelete="CASCADE"), nullable=True
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # inbox = 待处理 / converted = 已转化 / discarded = 已丢弃
+    status: Mapped[str] = mapped_column(String(20), default="inbox", nullable=False)
+    converted_kind: Mapped[str] = mapped_column(String(20), default="", nullable=False)
+    converted_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class PromptTemplate(Base):
+    """F6 自定义 Prompt 模板：用户沉淀的常用 AI 写作指令，点击即填入
+    AI 面板的"写作要求"。全局共享（不挂作品）。"""
+
+    __tablename__ = "prompt_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(60), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class TimelineEvent(Base):
+    """F8 时间线/大事记：按章节锚点排序的故事事件。
+
+    story_time 是自由文本（"第三年春""大战后三日"）——网文纪年体系千奇百怪，
+    强制结构化是伪需求；排序一律按章节 order（挂章事件）+ order_hint（同章内），
+    story_time 只做展示。chapter_id 为空 = 计划中事件；删除章节时 SET NULL
+    转为计划中（事件是作者资产，不应随章节消失）。"""
+
+    __tablename__ = "timeline_events"
+
+    __table_args__ = (
+        Index("ix_timeline_events_novel", "novel_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    novel_id: Mapped[str] = mapped_column(String(36), ForeignKey("novels.id", ondelete="CASCADE"), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    story_time: Mapped[str] = mapped_column(String(60), default="", nullable=False)
+    chapter_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True
+    )
+    order_hint: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 class AIUsage(Base):

@@ -5,10 +5,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from ..database import get_db
-from ..models import Character, Location, PlotThread, ThreadPriority, ThreadStatus, WorldSetting
+from ..models import Chapter, Character, Location, PlotThread, ThreadPriority, ThreadStatus, WorldSetting
 from ..schemas import (
     CharacterCreate, CharacterResponse, CharacterUpdate,
     LocationCreate, LocationResponse, LocationUpdate,
@@ -32,6 +32,10 @@ def create_character(novel_id: str, payload: CharacterCreate, database: Session 
     _get_novel(database, novel_id)
     character = Character(novel_id=novel_id, **payload.model_dump())
     database.add(character)
+    database.flush()
+    # F2 登场追踪：新角色的名字可能早已出现在既有章节里，全量补扫一次。
+    from ..services.presence import rescan_novel
+    rescan_novel(database, novel_id)
     database.commit()
     database.refresh(character)
     return _character(character)
@@ -42,11 +46,80 @@ def update_character(character_id: str, payload: CharacterUpdate, database: Sess
     character = database.get(Character, character_id)
     if not character:
         raise HTTPException(status_code=404, detail="Character not found")
-    for field, value in payload.model_dump(exclude_none=True).items():
+    changes = payload.model_dump(exclude_none=True)
+    for field, value in changes.items():
         setattr(character, field, value)
+    # F2 登场追踪：改名/加别名会改变命中规则，全量重扫该小说。
+    if "name" in changes or "aliases" in changes:
+        from ..services.presence import rescan_novel
+        rescan_novel(database, character.novel_id)
     database.commit()
     database.refresh(character)
     return _character(character)
+
+
+@router.get("/novels/{novel_id}/characters/presence")
+def characters_presence(novel_id: str, database: Session = Depends(get_db)):
+    """F2 登场矩阵：每角色的首末登场章、距最新章的空窗章数、登场章数与命中次数。
+    gap=0 表示最新一章仍在场；None 表示从未登场（或尚未扫描）。"""
+    from ..models import CharacterAppearance
+
+    _get_novel(database, novel_id)
+    chapters = database.scalars(
+        select(Chapter).options(load_only(Chapter.id, Chapter.order))
+        .where(Chapter.novel_id == novel_id).order_by(Chapter.order)
+    ).all()
+    # 惰性回填：老库首次查询（或该作品从未扫过）时自动全量扫一次——否则升级后
+    # 角色页在用户手动"重扫"前一直显示"尚未登场"。零记录但确实无命中的作品
+    # 会重复轻扫（str.count，毫秒级），可接受。
+    from ..services.presence import rescan_novel
+    already = database.scalar(select(CharacterAppearance.id).where(
+        CharacterAppearance.novel_id == novel_id).limit(1))
+    if not already and chapters:
+        rescan_novel(database, novel_id)
+        database.commit()
+    order_by_id = {c.id: c.order for c in chapters}
+    latest_order = max(order_by_id.values(), default=0)
+    agg: dict[str, dict] = {}
+    for row in database.scalars(
+        select(CharacterAppearance).where(CharacterAppearance.novel_id == novel_id)
+    ):
+        order = order_by_id.get(row.chapter_id)
+        if order is None:
+            continue  # 章节已删（外键级联应已清理，防御性跳过）
+        bucket = agg.setdefault(row.character_id, {"orders": set(), "hits": 0})
+        bucket["orders"].add(order)
+        bucket["hits"] += row.hits
+    out = []
+    for c in database.scalars(
+        select(Character).where(Character.novel_id == novel_id).order_by(Character.created_at)
+    ):
+        bucket = agg.get(c.id)
+        if bucket:
+            last = max(bucket["orders"])
+            out.append({
+                "character_id": c.id, "name": c.name, "role": c.role or "",
+                "first_chapter": min(bucket["orders"]), "last_chapter": last,
+                "gap": latest_order - last, "chapter_count": len(bucket["orders"]), "hits": bucket["hits"],
+            })
+        else:
+            out.append({
+                "character_id": c.id, "name": c.name, "role": c.role or "",
+                "first_chapter": None, "last_chapter": None, "gap": None,
+                "chapter_count": 0, "hits": 0,
+            })
+    return {"latest_chapter": latest_order, "characters": out}
+
+
+@router.post("/novels/{novel_id}/characters/rescan")
+def rescan_characters(novel_id: str, database: Session = Depends(get_db)):
+    """F2 全量重扫：修数据或初次启用时手动触发。"""
+    from ..services.presence import rescan_novel as _rescan
+
+    _get_novel(database, novel_id)
+    count = _rescan(database, novel_id)
+    database.commit()
+    return {"novel_id": novel_id, "appearances": count}
 
 
 @router.delete("/characters/{character_id}", status_code=204)

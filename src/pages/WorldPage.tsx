@@ -28,7 +28,7 @@ export function WorldPage({ workspace, reload }: { workspace: Workspace; reload:
     if (affectsCount) void reload()
   }
   if (loading) return <div className="page-loading-fallback">加载中…</div>
-  if (settings.length === 0) return <EmptyStateWrap icon={Globe2} title="还没有世界观设定" desc="维护规则、势力与物品，保持设定前后一致。" action={() => setCreating(true)} />
+  if (settings.length === 0) return <><EmptyStateWrap icon={Globe2} title="还没有世界观设定" desc="维护规则、势力与物品，保持设定前后一致。" action={() => setCreating(true)} />{creating && <SettingForm novelId={novelId} onClose={() => setCreating(false)} onSaved={saved => { setCreating(false); upsert(saved, true) }} />}</>
   return <Scroll><PageHeader eyebrow="设定资料" title="世界观" desc="集中维护规则、势力、历史与关键物品。" actions={<>
     <Button onClick={() => setAiOpen(true)}><Sparkles size={14} />AI 生成</Button>
     <Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />新建设定</Button>

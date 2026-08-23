@@ -309,6 +309,25 @@ def search_novel(novel_id: str, q: str = Query(min_length=1), database: Session 
     }
 
 
+@router.post("/novels/{novel_id}/style-profile")
+def build_style_profile(novel_id: str, scope: int = Query(20, ge=1, le=500),
+                        database: Session = Depends(get_db)):
+    """F11 文风画像：统计最近 scope 章正文的文风指标并写回 novel.style_profile。
+    存在画像时，续写/润色等生成请求会自动注入一段文风约束。"""
+    from ..services.style import analyze_style
+
+    novel = _get_novel(database, novel_id)
+    chapters = database.scalars(
+        select(Chapter).where(Chapter.novel_id == novel_id, Chapter.content != "")
+        .order_by(Chapter.order.desc()).limit(scope)
+    ).all()
+    profile = analyze_style([c.content for c in chapters])
+    profile["chapters_analyzed"] = len(chapters)
+    novel.style_profile = profile
+    database.commit()
+    return profile
+
+
 @router.post("/novels/{novel_id}/export")
 def export_novel(novel_id: str, payload: ExportRequest, database: Session = Depends(get_db)):
     novel = _get_novel(database, novel_id)
@@ -351,6 +370,56 @@ def export_novel(novel_id: str, payload: ExportRequest, database: Session = Depe
         buf = BytesIO()
         doc.save(buf)
         return Response(content=buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers=disposition(novel.title, "docx"))
+
+    if fmt == "epub":
+        # F7 EPUB 导出：章节为 spine+目录；正文按空行分段、段首缩进。
+        # 不带大纲 Scene——那是规划素材，不应混进稿件。
+        from io import BytesIO
+        from ebooklib import epub
+
+        def esc(text: str) -> str:
+            return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        book = epub.EpubBook()
+        book.set_identifier(f"mojing-{novel_id}")
+        book.set_title(novel.title)
+        book.set_language("zh-CN")
+        if novel.author:
+            book.add_author(novel.author)
+        css = epub.EpubItem(
+            uid="style", file_name="style/main.css", media_type="text/css",
+            content=(
+                "body{font-family:serif;line-height:1.8;margin:0 6%;}"
+                "p{text-indent:2em;margin:0 0 .35em 0;}"
+                "h1{font-size:1.15em;margin:1.2em 0 1em;}"
+            ).encode("utf-8"),
+        )
+        book.add_item(css)
+        nav_items: list = []
+        for c in chapters:
+            parts = [f"<h1>第 {c.order} 章 · {esc(c.title)}</h1>"]
+            for para in (c.content or "").split("\n"):
+                stripped = para.strip()
+                if stripped:
+                    parts.append(f"<p>{esc(stripped)}</p>")
+            item = epub.EpubHtml(
+                title=f"第 {c.order} 章 {c.title}", file_name=f"chap{c.order:04d}.xhtml", lang="zh-CN",
+            )
+            item.content = (
+                "<html><head><title>" + esc(c.title) + "</title></head><body>"
+                + "".join(parts) + "</body></html>"
+            )
+            item.add_item(css)
+            book.add_item(item)
+            nav_items.append(item)
+        book.toc = tuple(nav_items)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.spine = ["nav", *nav_items]
+        buf = BytesIO()
+        epub.write_epub(buf, book, {})
+        return Response(content=buf.getvalue(), media_type="application/epub+zip",
+                        headers=disposition(novel.title, "epub"))
 
     # default txt
     body = f"{novel.title}\n{novel.author or ''}\n\n"

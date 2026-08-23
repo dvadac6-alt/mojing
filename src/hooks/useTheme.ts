@@ -10,25 +10,34 @@ function readInitialTheme(): Theme {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
+// 模块级单例状态 + 订阅：App/标题栏/设置页各挂一个 useTheme() 实例，
+// 任何一处切换，其余实例同步重渲染（此前各持独立 state 会图标错位）。
+let _theme: Theme = readInitialTheme()
+const _listeners = new Set<(t: Theme) => void>()
+
+function _applyTheme(theme: Theme) {
+  localStorage.setItem(STORAGE_KEY, theme)
+  const root = document.documentElement
+  root.dataset.theme = theme
+  root.classList.add('theme-anim')
+  window.setTimeout(() => root.classList.remove('theme-anim'), 350)
+}
+
 /** 昼夜主题：读取（localStorage > 系统偏好）→ 写到 <html data-theme>，
  * 切换时短暂挂 theme-anim 类让背景/文字色平滑过渡。 */
 export function useTheme() {
-  const [theme, setTheme] = useState<Theme>(readInitialTheme)
+  const [theme, setTheme] = useState<Theme>(_theme)
 
   useEffect(() => {
-    const root = document.documentElement
-    root.dataset.theme = theme
-    root.classList.add('theme-anim')
-    const id = window.setTimeout(() => root.classList.remove('theme-anim'), 350)
-    return () => window.clearTimeout(id)
-  }, [theme])
-
-  // Persist in an effect (not inside the setState updater): updater functions
-  // must stay pure — StrictMode runs them twice, which would double-write.
-  useEffect(() => { localStorage.setItem(STORAGE_KEY, theme) }, [theme])
+    const sync = (next: Theme) => setTheme(next)
+    _listeners.add(sync)
+    return () => { _listeners.delete(sync) }
+  }, [])
 
   const toggleTheme = useCallback(() => {
-    setTheme(current => (current === 'dark' ? 'light' : 'dark'))
+    _theme = _theme === 'dark' ? 'light' : 'dark'
+    _applyTheme(_theme)
+    _listeners.forEach(fn => fn(_theme))
   }, [])
 
   return { theme, toggleTheme }

@@ -7,6 +7,8 @@ export type Novel = {
   genre: string
   target_words: number
   status: 'planning' | 'writing' | 'completed'
+  /** F11 文风画像（服务端统计，客户端只读）。 */
+  style_profile: Record<string, number> | null
   total_words: number
   chapter_count: number
   created_at: string
@@ -21,13 +23,16 @@ export type Chapter = {
   order: number
   word_count: number
   status: 'draft' | 'writing' | 'completed'
+  /** F1 章节摘要链：剧情摘要（手写或 AI 生成后落库）。 */
+  summary: string
+  summary_updated_at: string | null
   created_at: string
   updated_at: string
 }
 
 /** Chapter metadata without the (potentially large) body. The workspace payload
  * returns summaries; full content is loaded on demand via getChapter(). */
-export type ChapterSummary = Omit<Chapter, 'content'>
+export type ChapterSummary = Omit<Chapter, 'content' | 'summary' | 'summary_updated_at'>
 
 export type ChapterVersion = {
   id: string
@@ -53,6 +58,60 @@ export type Character = {
   abilities: string
   relationships: Record<string, unknown>
   first_appearance_chapter_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** F2 角色登场追踪：每角色的登场统计。gap = 距最新章的空窗章数。 */
+export type CharacterPresence = {
+  character_id: string
+  name: string
+  role: string
+  first_chapter: number | null
+  last_chapter: number | null
+  gap: number | null
+  chapter_count: number
+  hits: number
+}
+
+/** F3 发布前自检：本地检查结果（敏感词来自用户手动维护的词库）。 */
+export type LintIssue = {
+  type: 'sensitive' | 'duplicate' | 'punct'
+  word: string
+  offset: number
+  message: string
+}
+
+/** F5 灵感收集箱：碎片想法，可转化为角色/伏笔/章节。novel_id 空 = 全局。 */
+export type Idea = {
+  id: number
+  novel_id: string | null
+  content: string
+  status: 'inbox' | 'converted' | 'discarded'
+  converted_kind: 'character' | 'thread' | 'chapter' | ''
+  converted_id: string
+  created_at: string
+  updated_at: string
+}
+
+/** F6 自定义 Prompt 模板：常用 AI 写作指令预设，点击填入写作要求。 */
+export type PromptTemplate = {
+  id: number
+  name: string
+  content: string
+  created_at: string
+  updated_at: string
+}
+
+/** F8 时间线/大事记：按章节锚点排序的故事事件；chapter_id 空 = 计划中。 */
+export type TimelineEvent = {
+  id: string
+  novel_id: string
+  title: string
+  description: string
+  story_time: string
+  chapter_id: string | null
+  order_hint: number
   created_at: string
   updated_at: string
 }
@@ -240,17 +299,24 @@ export type AIContextOptions = {
   /** RAG 检索增强（后端未启用 embedding 时静默跳过） */
   prior_chapters?: boolean
   library?: boolean
+  /** F1 前情提要：更早章节摘要串注入 */
+  recap?: boolean
+  /** F8 时间线：当前章前后挂载的大事记事件注入（默认关闭） */
+  timeline?: boolean
 }
 
 export type AIGenerateRequest = {
   novel_id: string
   chapter_id?: string | null
   instruction?: string
-  mode?: 'continue' | 'polish' | 'expand' | 'worldsetting' | 'setting_expand'
+  mode?: 'continue' | 'polish' | 'expand' | 'worldsetting' | 'setting_expand' | 'summarize' | 'dialogue'
   target_words?: number
   // Pick a specific AI config (model); omit to use the active one.
   config_id?: number | null
   context?: Partial<AIContextOptions>
+  /** F10 对话生成专用字段（/ai/dialogue） */
+  character_ids?: string[]
+  scene?: string
 }
 
 declare global {
@@ -410,13 +476,81 @@ const api = {
     request<Chapter>(`/novels/${novelId}/chapters`, { method: 'POST', body: JSON.stringify({ title, content }) }),
   getChapter: (id: string) => request<Chapter>(`/chapters/${id}`),
   // init 透传（如 keepalive）供写作页的 beforeunload 兜底保存使用。
-  updateChapter: (id: string, changes: Partial<Pick<Chapter, 'title' | 'content' | 'status'>>, init?: RequestInit) =>
+  updateChapter: (id: string, changes: Partial<Pick<Chapter, 'title' | 'content' | 'status' | 'summary'>>, init?: RequestInit) =>
     request<Chapter>(`/chapters/${id}`, { method: 'PUT', body: JSON.stringify(changes), ...init }),
   deleteChapter: (id: string) => request<void>(`/chapters/${id}`, { method: 'DELETE' }),
   listVersions: (chapterId: string) =>
     request<ChapterVersion[]>(`/chapters/${chapterId}/versions`),
   rollback: (chapterId: string, versionId: string) =>
     request<Chapter>(`/chapters/${chapterId}/rollback/${versionId}`, { method: 'POST' }),
+  /** F1 滚动前情提要：beforeChapterId 之前的"摘要串 + 最近章结尾"。 */
+  getRecap: (novelId: string, beforeChapterId?: string | null) =>
+    request<{ recap: string; chapters: number; missing_summaries: number }>(
+      `/novels/${novelId}/recap${beforeChapterId ? `?before_chapter_id=${beforeChapterId}` : ''}`,
+    ),
+  // F3 发布前自检：本地 lint + 用户手动维护的敏感词库
+  lintChapter: (novelId: string, chapterId: string) =>
+    request<{ chapter_id: string; issues: LintIssue[]; word_count: number; counts: { sensitive: number; duplicate: number; punct: number } }>(
+      `/novels/${novelId}/chapters/${chapterId}/lint`, { method: 'POST' },
+    ),
+  getSensitiveWords: () =>
+    request<{ words: string[]; count: number }>('/wordlists/sensitive'),
+  saveSensitiveWords: (words: string[]) =>
+    request<{ words: string[]; count: number }>('/wordlists/sensitive', {
+      method: 'PUT', body: JSON.stringify({ words }),
+    }),
+  importSensitiveWords: (content: string) =>
+    request<{ count: number; added: number }>('/wordlists/sensitive/import', {
+      method: 'POST', body: JSON.stringify({ content }),
+    }),
+  // F5 灵感收集箱
+  listIdeas: (novelId?: string | null) =>
+    request<Idea[]>(`/ideas${novelId ? `?novel_id=${novelId}` : ''}`),
+  createIdea: (content: string, novelId?: string | null) =>
+    request<Idea>('/ideas', { method: 'POST', body: JSON.stringify({ content, novel_id: novelId ?? null }) }),
+  updateIdea: (id: number, data: { content?: string; status?: 'inbox' | 'discarded' }) =>
+    request<Idea>(`/ideas/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteIdea: (id: number) => request<void>(`/ideas/${id}`, { method: 'DELETE' }),
+  convertIdea: (id: number, kind: 'character' | 'thread' | 'chapter', novelId: string, title?: string) =>
+    request<Idea>(`/ideas/${id}/convert`, {
+      method: 'POST', body: JSON.stringify({ kind, novel_id: novelId, title: title ?? null }),
+    }),
+  // F6 自定义 Prompt 模板
+  listPromptTemplates: () => request<PromptTemplate[]>('/prompt-templates'),
+  createPromptTemplate: (name: string, content: string) =>
+    request<PromptTemplate>('/prompt-templates', { method: 'POST', body: JSON.stringify({ name, content }) }),
+  updatePromptTemplate: (id: number, data: { name?: string; content?: string }) =>
+    request<PromptTemplate>(`/prompt-templates/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deletePromptTemplate: (id: number) => request<void>(`/prompt-templates/${id}`, { method: 'DELETE' }),
+  // F8 时间线/大事记
+  listTimelineEvents: (novelId: string) =>
+    request<TimelineEvent[]>(`/novels/${novelId}/timeline-events`),
+  createTimelineEvent: (novelId: string, data: { title: string; description?: string; story_time?: string; chapter_id?: string | null }) =>
+    request<TimelineEvent>(`/novels/${novelId}/timeline-events`, { method: 'POST', body: JSON.stringify(data) }),
+  updateTimelineEvent: (id: string, data: { title?: string; description?: string; story_time?: string; chapter_id?: string | null }) =>
+    request<TimelineEvent>(`/timeline-events/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteTimelineEvent: (id: string) => request<void>(`/timeline-events/${id}`, { method: 'DELETE' }),
+  // F9 命名生成器（本地词库，零 AI）
+  generateNames: (kind: string, count = 10) =>
+    request<{ kind: string; label: string; names: string[] }>(
+      `/tools/names?kind=${encodeURIComponent(kind)}&count=${count}`,
+    ),
+  // F11 文风画像：统计最近 N 章并写回 novel.style_profile
+  buildStyleProfile: (novelId: string, scope = 20) =>
+    request<Record<string, number>>(`/novels/${novelId}/style-profile?scope=${scope}`, { method: 'POST' }),
+  // F12 WebDAV 备份
+  getWebdavConfig: () =>
+    request<{ configured: boolean; url: string; username: string; has_password: boolean; keep: number }>('/webdav/config'),
+  saveWebdavConfig: (data: { url?: string; username?: string; password?: string | null; keep?: number }) =>
+    request<{ configured: boolean; url: string; username: string; has_password: boolean; keep: number }>('/webdav/config', {
+      method: 'PUT', body: JSON.stringify(data),
+    }),
+  testWebdavConfig: () =>
+    request<{ ok: boolean; detail: string }>('/webdav/config/test', { method: 'POST', timeoutMs: 60_000 }),
+  uploadWebdavBackup: () =>
+    request<{ ok: boolean; detail: string; name: string; size_kb: number }>('/webdav/backup/upload', {
+      method: 'POST', timeoutMs: 300_000,
+    }),
 
   // scenes (outline mind-map leaf nodes；#2 懒加载独立列表端点)
   listScenes: (novelId: string) => request<SceneSummary[]>(`/novels/${novelId}/scenes`),
@@ -445,6 +579,15 @@ const api = {
   updateCharacter: (id: string, data: Partial<Character>) =>
     request<Character>(`/characters/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteCharacter: (id: string) => request<void>(`/characters/${id}`, { method: 'DELETE' }),
+  // F2 角色登场追踪
+  characterPresence: (novelId: string) =>
+    request<{ latest_chapter: number; characters: CharacterPresence[] }>(
+      `/novels/${novelId}/characters/presence`,
+    ),
+  rescanPresence: (novelId: string) =>
+    request<{ novel_id: string; appearances: number }>(
+      `/novels/${novelId}/characters/rescan`, { method: 'POST', timeoutMs: 120_000 },
+    ),
 
   // locations
   listLocations: (novelId: string) => request<Location[]>(`/novels/${novelId}/locations`),
@@ -630,7 +773,7 @@ const api = {
       total_calls: number
       by_model: { model: string; total_tokens: number; calls: number; prompt: number; completion: number }[]
     }>(`/novels/${novelId}/ai/usage?days=${days}`),
-  exportNovel: async (novelId: string, format: 'txt' | 'markdown' | 'docx', chapterIds?: string[]) => {
+  exportNovel: async (novelId: string, format: 'txt' | 'markdown' | 'docx' | 'epub', chapterIds?: string[]) => {
     const response = await fetch(`${API_BASE}/novels/${novelId}/export`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },

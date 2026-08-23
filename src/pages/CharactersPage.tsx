@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
-  BrainCircuit, ChevronRight, CloudOff, GitBranch,
-  PenLine, Trash2, Users, X,
+  BrainCircuit, ChevronRight, CloudOff, GitBranch, MapPin,
+  PenLine, RefreshCw, Trash2, Users, X,
 } from 'lucide-react'
-import { workspaceApi, type Character, type PlotThread, type Workspace } from '../workspaceApi'
-import { COLORS } from '../lib/constants'
+import { workspaceApi, type Character, type CharacterPresence, type PlotThread, type Workspace } from '../workspaceApi'
+import { COLORS, readPresenceGap, writePresenceGap } from '../lib/constants'
 import { confirmDialog } from '../components/Confirm'
 import { Button, Detail, EmptyStateWrap, Field, FormFooter, LinkRecord, Modal, PaneHead, SearchBox } from '../components/ui'
 import { areaCls, inputCls } from '../lib/constants'
@@ -17,6 +17,25 @@ export function CharactersPage({ workspace, reload }: { workspace: Workspace; re
   // 不再整包 reload workspace。新增/删除会改变侧栏计数，补一次轻量 reload。
   const { items: people, loading, patch: patchCharacters } = useEntityList('characters', novelId, workspaceApi.listCharacters)
   const { items: threads } = useEntityList('plot-threads', novelId, workspaceApi.listThreads)
+  // F2 登场追踪：进入页面拉一次；章节保存由写作页触发，切回本页时重取即可。
+  const [presence, setPresence] = useState<CharacterPresence[]>([])
+  const [gapLimit, setGapLimit] = useState(readPresenceGap)
+  const [rescanning, setRescanning] = useState(false)
+  const refreshPresence = useCallback(() => workspaceApi.characterPresence(novelId)
+    .then(d => setPresence(d.characters)).catch(() => { /* 登场数据非关键，静默 */ }), [novelId])
+  useEffect(() => { void refreshPresence() }, [refreshPresence])
+  const changeGapLimit = (value: number) => {
+    const gap = Math.max(1, Math.floor(value) || 1)
+    setGapLimit(gap)
+    writePresenceGap(gap)
+  }
+  const rescan = async () => {
+    setRescanning(true)
+    try {
+      await workspaceApi.rescanPresence(novelId)
+      await refreshPresence()
+    } catch { /* rescan 失败保留旧数据 */ } finally { setRescanning(false) }
+  }
   const [selectedId, setSelectedId] = useState(people[0]?.id ?? '')
   const [editing, setEditing] = useState<Character | null>(null)
   const [creating, setCreating] = useState(false)
@@ -24,6 +43,7 @@ export function CharactersPage({ workspace, reload }: { workspace: Workspace; re
   const [query, setQuery] = useState('')
   useEffect(() => { if (!people.find(p => p.id === selectedId)) setSelectedId(people[0]?.id ?? '') }, [people])
   const person = people.find(p => p.id === selectedId) ?? people[0]
+  const personPresence = presence.find(p => p.character_id === person?.id)
   const q = query.trim()
   const visible = q ? people.filter(p => p.name.includes(q) || (p.aliases ?? '').includes(q) || (p.role ?? '').includes(q)) : people
 
@@ -31,17 +51,32 @@ export function CharactersPage({ workspace, reload }: { workspace: Workspace; re
     patchCharacters(prev =>
       prev.some(c => c.id === saved.id) ? prev.map(c => (c.id === saved.id ? saved : c)) : [...prev, saved])
     if (affectsCount) void reload()
+    // 新建/改名会触发后端全量重扫，刷新登场数据。
+    void refreshPresence()
   }
 
   if (loading) return <div className="page-loading-fallback">加载中…</div>
-  if (people.length === 0) return <EmptyStateWrap icon={Users} title="还没有角色" desc="创建第一个角色，让 AI 续写时记住他们的性格与背景。" action={() => setCreating(true)} />
+  if (people.length === 0) return <><EmptyStateWrap icon={Users} title="还没有角色" desc="创建第一个角色，让 AI 续写时记住他们的性格与背景。" action={() => setCreating(true)} />{creating && <CharacterForm novelId={novelId} onClose={() => setCreating(false)} onSaved={saved => { setCreating(false); upsert(saved, true) }} />}</>
 
-  return <><div className="master-detail"><aside className="entity-pane"><PaneHead eyebrow="人物资料" title="角色" onAdd={() => setCreating(true)} /><SearchBox text="搜索角色" value={query} onChange={setQuery} /><div className="chips"><button className="active">全部 {visible.length}</button></div>{visible.map(p => <button key={p.id} className={'person-item ' + (p.id === selectedId ? 'active' : '')} onClick={() => setSelectedId(p.id)}><b style={{ background: p.color }}>{p.name.slice(0, 1)}</b><span><strong>{p.name}</strong><small>{p.role || p.aliases}</small></span><ChevronRight size={14} /></button>)}
+  return <><div className="master-detail"><aside className="entity-pane"><PaneHead eyebrow="人物资料" title="角色" onAdd={() => setCreating(true)} /><SearchBox text="搜索角色" value={query} onChange={setQuery} /><div className="chips"><button className="active">全部 {visible.length}</button><button title="空窗提醒阈值：角色超过 N 章未登场时标记" onClick={() => changeGapLimit(gapLimit + 1)} onContextMenu={e => { e.preventDefault(); changeGapLimit(gapLimit - 1) }}>空窗 ≥{gapLimit}章</button></div>{visible.map(p => {
+    const info = presence.find(x => x.character_id === p.id)
+    const absent = info && info.gap !== null && info.gap >= gapLimit
+    return <button key={p.id} className={'person-item ' + (p.id === selectedId ? 'active' : '')} onClick={() => setSelectedId(p.id)}><b style={{ background: p.color }}>{p.name.slice(0, 1)}</b><span><strong>{p.name}</strong><small>{info && info.gap !== null ? `第${info.last_chapter}章登场 · 空窗${info.gap}章` : p.role || p.aliases}</small>{absent && <em className="presence-warn">久未登场</em>}</span><ChevronRight size={14} /></button>
+  })}
     {q && visible.length === 0 && <p style={{ padding: '14px 16px', color: 'var(--text-3)', fontSize: 11 }}>没有匹配「{q}」的角色</p>}</aside>
-    {person && <section className="entity-detail"><div className="person-hero"><b style={{ background: person.color }}>{person.name.slice(0, 1)}</b><div><label>角色 · {person.aliases ? person.aliases : '已登场'}</label><h1>{person.name}</h1><p>{person.role}</p></div><Button onClick={() => setRelationPreview(true)}><GitBranch size={14} />关系图预览</Button><Button kind="danger" onClick={async () => { const ok = await confirmDialog({ title: '删除角色', message: `删除角色「${person.name}」？关联伏笔中的引用将被移除。`, danger: true }); if (ok) { await workspaceApi.deleteCharacter(person.id); patchCharacters(prev => prev.filter(p => p.id !== person.id)); void reload() } }}><Trash2 size={14} />删除</Button><Button kind="primary" onClick={() => setEditing(person)}><PenLine size={14} />编辑资料</Button></div>
+    {person && <section className="entity-detail"><div className="person-hero"><b style={{ background: person.color }}>{person.name.slice(0, 1)}</b><div><label>角色 · {person.aliases ? person.aliases : '已登场'}</label><h1>{person.name}</h1><p>{person.role}</p></div><Button onClick={() => setRelationPreview(true)}><GitBranch size={14} />关系图预览</Button><Button kind="danger" onClick={async () => { const ok = await confirmDialog({ title: '删除角色', message: `删除角色「${person.name}」？关联伏笔中的引用将被移除。`, danger: true }); if (ok) { await workspaceApi.deleteCharacter(person.id); patchCharacters(prev => prev.filter(p => p.id !== person.id)); void reload(); void refreshPresence() } }}><Trash2 size={14} />删除</Button><Button kind="primary" onClick={() => setEditing(person)}><PenLine size={14} />编辑资料</Button></div>
       <div className="detail-grid">
         <Detail title="人物简介" wide><p className="lead">{person.description || '暂无简介。'}</p></Detail>
         <Detail title="性格关键词"><div className="tag-list">{(person.personality || '未设定').split(/[·、\s,，]+/, 6).filter(Boolean).map(t => <span key={t}>{t}</span>)}</div></Detail>
+        <Detail title="登场记录"><div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {personPresence && personPresence.chapter_count > 0
+            ? <>
+              <p><MapPin size={13} style={{ verticalAlign: -2, marginRight: 4 }} />首登场 第{personPresence.first_chapter}章 · 最近 第{personPresence.last_chapter}章</p>
+              <p>登场 {personPresence.chapter_count} 章 · 提及 {personPresence.hits} 次 · 空窗 <b className={personPresence.gap !== null && personPresence.gap >= gapLimit ? 'presence-warn' : ''}>{personPresence.gap ?? '—'}</b> 章</p>
+            </>
+            : <p>{personPresence ? '尚未在正文中登场（按角色名与别名扫描）。' : '登场数据加载中…'}</p>}
+          <Button onClick={() => void rescan()} disabled={rescanning}><RefreshCw size={13} />{rescanning ? '重扫中…' : '重扫登场记录'}</Button>
+        </div></Detail>
         <Detail title="能力与弱点"><p>{person.abilities || '未设定'}</p></Detail>
         <Detail title="背景故事" wide><p>{person.background || '未设定'}</p></Detail>
         <Detail title="外貌描述"><p>{person.appearance || '未设定'}</p></Detail>

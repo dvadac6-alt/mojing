@@ -20,7 +20,7 @@ from ..schemas import (
     SceneCreate, SceneSummary, SceneUpdate,
 )
 from ..utils import count_words
-from .helpers import _chapter, _chapter_summary, _get_novel, _graph_edge, _record_auto_version, _scene
+from .helpers import _chapter, _chapter_summary, _get_novel, _graph_edge, _record_auto_version, _scene, _utcnow
 from .system import _daily_backup_if_due
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,10 @@ def create_chapter(novel_id: str, payload: ChapterCreate, database: Session = De
         order=next_order + 1, word_count=count_words(payload.content), status=ChapterStatus.DRAFT,
     )
     database.add(chapter)
+    database.flush()  # 生成 chapter.id，登场追踪需要它做外键
+    # F2 登场追踪：创建时若带初始正文，同步扫一次。
+    from ..services.presence import sync_chapter_appearances
+    sync_chapter_appearances(database, chapter)
     database.commit()
     database.refresh(chapter)
     return _chapter(chapter)
@@ -128,10 +132,18 @@ def update_chapter(chapter_id: str, payload: ChapterUpdate, database: Session = 
             chapter.status = ChapterStatus(changes["status"])
         except ValueError as e:
             raise HTTPException(status_code=422, detail="Invalid chapter status") from e
+    # F1 摘要单独保存：不触发正文版本快照，只记一个变更时间用于"过期"提示。
+    if changes.get("summary") is not None and changes["summary"] != chapter.summary:
+        chapter.summary = changes["summary"]
+        chapter.summary_updated_at = _utcnow()
 
     database.commit()
     database.refresh(chapter)
     if content_changed:
+        # F2 登场追踪：正文变化即重扫该章（名字扫描是毫秒级，随保存同步执行）。
+        from ..services.presence import sync_chapter_appearances
+        sync_chapter_appearances(database, chapter)
+        database.commit()
         # RAG 增量索引（RAG设计方案.md §五）：节流后台重建（见 _schedule_rag_reindex）。
         _schedule_rag_reindex(chapter.id)
     return _chapter(chapter)
@@ -203,9 +215,69 @@ def rollback_chapter(chapter_id: str, version_id: str, database: Session = Depen
     ))
     chapter.content = version.content
     chapter.word_count = version.word_count
+    # F2 登场追踪：回滚改变了正文，重扫该章。
+    from ..services.presence import sync_chapter_appearances
+    sync_chapter_appearances(database, chapter)
     database.commit()
     database.refresh(chapter)
     return _chapter(chapter)
+
+
+# ---------------------------------------------------------------- lint (F3 发布前自检)
+@router.post("/novels/{novel_id}/chapters/{chapter_id}/lint")
+def lint_chapter(novel_id: str, chapter_id: str, database: Session = Depends(get_db)):
+    """对一章跑本地自检：用户敏感词库 + 疑似叠字 + 标点规范。不调 AI、不上传正文。"""
+    from .. import database as db_mod
+    from ..services.lint import lint_text, load_sensitive_words
+
+    _get_novel(database, novel_id)
+    chapter = database.get(Chapter, chapter_id)
+    if not chapter or chapter.novel_id != novel_id:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    issues = lint_text(chapter.content or "", load_sensitive_words(db_mod.DATA_DIR))
+    return {
+        "chapter_id": chapter_id,
+        "issues": issues,
+        "word_count": chapter.word_count,
+        "counts": {
+            "sensitive": sum(1 for i in issues if i["type"] == "sensitive"),
+            "duplicate": sum(1 for i in issues if i["type"] == "duplicate"),
+            "punct": sum(1 for i in issues if i["type"] == "punct"),
+        },
+    }
+
+
+# ---------------------------------------------------------------- recap (F1 滚动前情提要)
+@router.get("/novels/{novel_id}/recap")
+def get_recap(novel_id: str, before_chapter_id: str | None = None,
+              budget: int = Query(3000, ge=500, le=8000), database: Session = Depends(get_db)):
+    """拼装 before_chapter_id 之前的滚动前情提要：最近 2 章带结尾段，更早章节
+    用摘要串；无摘要降级为标题行。写作页"前情提要"弹窗与 AI 上下文注入共用。"""
+    from ..services.recap import RecapEntry, build_recap
+
+    _get_novel(database, novel_id)
+    chapters = database.scalars(
+        select(Chapter).where(Chapter.novel_id == novel_id).order_by(Chapter.order)
+    ).all()
+    before_order: int | None = None
+    if before_chapter_id:
+        current = next((c for c in chapters if c.id == before_chapter_id), None)
+        if current:
+            before_order = current.order
+    prior = [c for c in chapters if before_order is None or c.order < before_order]
+    recent_ids = {c.id for c in prior[-2:]}
+    entries = [
+        RecapEntry(
+            order=c.order, title=c.title, summary=c.summary or "",
+            tail=(c.content or "")[-400:] if c.id in recent_ids else "",
+        )
+        for c in prior
+    ]
+    return {
+        "recap": build_recap(entries, budget=budget),
+        "chapters": len(entries),
+        "missing_summaries": sum(1 for e in entries if not e.summary.strip()),
+    }
 
 
 # ---------------------------------------------------------------- scenes (outline mind map)

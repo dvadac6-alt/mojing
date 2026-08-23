@@ -39,6 +39,8 @@ class NovelResponse(OrmModel):
     genre: str
     target_words: int
     status: str
+    # F11 文风画像（服务端计算，客户端只读）
+    style_profile: dict | None = None
     total_words: int = 0
     chapter_count: int = 0
     created_at: datetime
@@ -54,6 +56,9 @@ class ChapterResponse(OrmModel):
     order: int
     word_count: int
     status: str
+    # F1 章节摘要链：摘要可手改可 AI 生成，经 PUT /chapters 落库。
+    summary: str = ""
+    summary_updated_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -81,6 +86,8 @@ class ChapterUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     content: str | None = None
     status: str | None = None
+    # F1：摘要单独保存（不影响正文版本快照，也不触碰 word_count）。
+    summary: str | None = None
 
 
 class ChapterReorder(BaseModel):
@@ -412,6 +419,10 @@ class AIContextOptions(BaseModel):
     # RAG 检索增强（未启用 embedding 时静默跳过）
     prior_chapters: bool = True   # 前文相关片段（跨章检索）
     library: bool = True          # 资料库参考片段
+    # F1 前情提要：更早章节的摘要串 + 最近章节结尾（按字数预算拼装）注入
+    recap: bool = True
+    # F8 时间线：当前章前后挂载的大事记事件（默认关闭，按需勾选）
+    timeline: bool = False
 
 
 class AIGenerateRequest(BaseModel):
@@ -509,3 +520,112 @@ class RagConfigUpdate(BaseModel):
     model: str | None = Field(default=None, max_length=120)
     base_url: str | None = Field(default=None, max_length=255)
     api_key: str | None = Field(default=None, max_length=500)
+
+
+# ---------- F3 发布前自检 ----------
+class LintWordlistUpdate(BaseModel):
+    """PUT /api/wordlists/sensitive — 整表替换（面板的添加/清空都走这里）。"""
+    words: list[str] = Field(default_factory=list, max_length=5000)
+
+
+class LintWordlistImport(BaseModel):
+    """POST /api/wordlists/sensitive/import — 追加导入文本（每行一词）。"""
+    content: str = Field(min_length=1, max_length=2_000_000)
+
+
+# ---------- F5 灵感收集箱 ----------
+class IdeaCreate(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+    # None = 全局灵感（不挂在具体作品下）
+    novel_id: str | None = None
+
+
+class IdeaUpdate(BaseModel):
+    content: str | None = Field(default=None, min_length=1, max_length=2000)
+    # 手动状态切换只允许 inbox/discarded；converted 由转化端点写入。
+    status: str | None = Field(default=None, pattern="^(inbox|discarded)$")
+
+
+class IdeaResponse(OrmModel):
+    id: int
+    novel_id: str | None = None
+    content: str
+    status: str
+    converted_kind: str
+    converted_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class IdeaConvertRequest(BaseModel):
+    """转化目标：character / thread / chapter。全局灵感必须显式指定 novel_id；
+    作品内灵感默认转入所属作品。"""
+    kind: str = Field(pattern="^(character|thread|chapter)$")
+    novel_id: str
+    title: str | None = Field(default=None, max_length=200)
+
+
+# ---------- F6 自定义 Prompt 模板 ----------
+class PromptTemplateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class PromptTemplateUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    content: str | None = Field(default=None, min_length=1, max_length=2000)
+
+
+class PromptTemplateResponse(OrmModel):
+    id: int
+    name: str
+    content: str
+    created_at: datetime
+    updated_at: datetime
+
+
+# ---------- F8 时间线/大事记 ----------
+class TimelineEventCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = ""
+    story_time: str = Field(default="", max_length=60)
+    chapter_id: str | None = None
+    order_hint: int = 0
+
+
+class TimelineEventUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    story_time: str | None = Field(default=None, max_length=60)
+    chapter_id: str | None = None
+    order_hint: int | None = None
+
+
+class TimelineEventResponse(OrmModel):
+    id: str
+    novel_id: str
+    title: str
+    description: str
+    story_time: str
+    chapter_id: str | None = None
+    order_hint: int
+    created_at: datetime
+    updated_at: datetime
+
+
+# ---------- F10 多角色对话生成 ----------
+class AIDialogueRequest(BaseModel):
+    novel_id: str
+    chapter_id: str | None = None
+    character_ids: list[str] = Field(min_length=2, max_length=6)
+    scene: str = Field(default="", max_length=500)
+    config_id: int | None = None
+
+
+# ---------- F12 WebDAV 备份 ----------
+class WebDavConfigUpdate(BaseModel):
+    """PUT /api/webdav/config。password: None=保留已存，""=清除，非空=覆盖（加密落库）。"""
+    url: str | None = Field(default=None, max_length=255)
+    username: str | None = Field(default=None, max_length=120)
+    password: str | None = Field(default=None, max_length=500)
+    keep: int | None = Field(default=None, ge=1, le=50)

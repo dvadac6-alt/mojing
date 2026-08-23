@@ -84,7 +84,7 @@ export function LocationsPage({ workspace, reload }: { workspace: Workspace; rel
   }
 
   if (loading) return <div className="page-loading-fallback">加载中…</div>
-  if (locs.length === 0) return <EmptyStateWrap icon={MapPin} title="还没有地点" desc="建立地点层级，让故事的空间更有层次。" action={() => setCreating(true)} />
+  if (locs.length === 0) return <><EmptyStateWrap icon={MapPin} title="还没有地点" desc="建立地点层级，让故事的空间更有层次。" action={() => setCreating(true)} />{creating && <LocationForm novelId={novelId} locations={locs} onClose={() => setCreating(false)} onSaved={saved => { setCreating(false); upsert(saved, true) }} />}</>
 
   // 搜索时展示扁平的匹配列表（层级树不便展示跨层级命中），清空后回到树。
   const q = query.trim()

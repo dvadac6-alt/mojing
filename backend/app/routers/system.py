@@ -12,11 +12,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from ..database import reset_data_dir, set_data_dir, storage_info
-from ..schemas import StoragePathUpdate
+from ..database import reset_data_dir, session_scope, set_data_dir, storage_info
+from ..schemas import LintWordlistImport, LintWordlistUpdate, StoragePathUpdate, WebDavConfigUpdate
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -47,13 +47,108 @@ def list_backups_endpoint():
 def _daily_backup_if_due():
     """Best-effort first-write-of-day backup. The file backup (sqlite3 backup
     over the whole DB) runs in a daemon thread so the save request that
-    triggered it doesn't stall on disk I/O."""
+    triggered it doesn't stall on disk I/O. F12: 备份成功后若配置了 WebDAV，
+    在同一线程里顺势上传（失败只记日志，绝不影响本地备份）。"""
     from ..backup import backup_once, should_daily_backup
+
+    def _run():
+        try:
+            if should_daily_backup():
+                result = backup_once()
+                if result:
+                    _upload_backup_if_configured(result)
+        except Exception:
+            logger.warning("daily backup trigger failed", exc_info=True)
+
+    threading.Thread(target=_run, daemon=True, name="daily-backup").start()
+
+
+def _upload_backup_if_configured(result: dict) -> None:
+    """F12 每日备份后的自动 WebDAV 上传（fire-and-forget）。"""
     try:
-        if should_daily_backup():
-            threading.Thread(target=backup_once, daemon=True, name="daily-backup").start()
+        from ..models import WebDavConfig
+        from ..services.webdav import upload_backup
+        with session_scope() as database:
+            cfg = database.get(WebDavConfig, 1)
+            if not cfg or not cfg.url:
+                return
+            ok, detail = upload_backup(cfg, result["path"], result["name"])
+        if ok:
+            logger.info("webdav backup uploaded: %s", detail)
+        else:
+            logger.warning("webdav backup upload failed: %s", detail)
     except Exception:
-        logger.warning("daily backup trigger failed", exc_info=True)
+        logger.warning("webdav auto upload failed", exc_info=True)
+
+
+# ---------------------------------------------------------------- webdav backup (F12)
+@router.get("/webdav/config")
+def get_webdav_config():
+    from ..models import WebDavConfig
+    from ..security import decrypt_key
+    with session_scope() as database:
+        cfg = database.get(WebDavConfig, 1)
+        return {
+            "configured": bool(cfg and cfg.url),
+            "url": cfg.url if cfg else "",
+            "username": cfg.username if cfg else "",
+            "has_password": bool(cfg and decrypt_key(cfg.password)),
+            "keep": cfg.keep if cfg else 5,
+        }
+
+
+@router.put("/webdav/config")
+def save_webdav_config(payload: WebDavConfigUpdate):
+    from ..models import WebDavConfig
+    from ..security import encrypt_key
+    with session_scope() as database:
+        cfg = database.get(WebDavConfig, 1)
+        if not cfg:
+            cfg = WebDavConfig(id=1)
+            database.add(cfg)
+        changes = payload.model_dump(exclude_none=True)
+        if "url" in changes:
+            cfg.url = changes["url"].strip().rstrip("/")
+        if "username" in changes:
+            cfg.username = changes["username"].strip()
+        if "password" in changes:
+            # None=保留（exclude_none 已滤）；""=清除；非空=覆盖（加密落库）。
+            cfg.password = encrypt_key(changes["password"])
+        if "keep" in changes:
+            cfg.keep = changes["keep"]
+        database.commit()
+    return get_webdav_config()
+
+
+@router.post("/webdav/config/test")
+def test_webdav_config():
+    """连接测试（用已保存的配置）。前端先保存再测试，避免明文密码走请求体。"""
+    from ..models import WebDavConfig
+    from ..services.webdav import probe
+    with session_scope() as database:
+        cfg = database.get(WebDavConfig, 1)
+        if not cfg or not cfg.url:
+            return {"ok": False, "detail": "尚未配置 WebDAV 地址"}
+        ok, detail = probe(cfg)
+    return {"ok": ok, "detail": detail}
+
+
+@router.post("/webdav/backup/upload")
+def upload_backup_to_webdav():
+    """立即备份并上传（设置页手动触发）。"""
+    from ..backup import backup_once
+    from ..models import WebDavConfig
+    from ..services.webdav import upload_backup
+
+    result = backup_once()
+    if not result:
+        raise HTTPException(status_code=409, detail="No database to back up yet")
+    with session_scope() as database:
+        cfg = database.get(WebDavConfig, 1)
+        if not cfg or not cfg.url:
+            raise HTTPException(status_code=422, detail="尚未配置 WebDAV")
+        ok, detail = upload_backup(cfg, result["path"], result["name"])
+    return {"ok": ok, "detail": detail, "name": result["name"], "size_kb": result["size_kb"]}
 
 
 # ---------------------------------------------------------------- health / workspace
@@ -99,6 +194,53 @@ def set_storage_path(payload: StoragePathUpdate):
 @router.post("/storage/reset")
 def reset_storage_path():
     return reset_data_dir()
+
+
+# ---------------------------------------------------------------- lint wordlist (F3)
+def _lint_data_dir() -> Path:
+    """词库随数据目录走：运行期切换 data dir 后这里拿到的是新目录。"""
+    from .. import database
+    return Path(database.DATA_DIR)
+
+
+@router.get("/wordlists/sensitive")
+def get_sensitive_words():
+    from ..services.lint import load_sensitive_words
+    words = load_sensitive_words(_lint_data_dir())
+    return {"words": words, "count": len(words)}
+
+
+@router.put("/wordlists/sensitive")
+def replace_sensitive_words(payload: LintWordlistUpdate):
+    from ..services.lint import load_sensitive_words, save_sensitive_words
+    save_sensitive_words(_lint_data_dir(), payload.words)
+    words = load_sensitive_words(_lint_data_dir())
+    return {"words": words, "count": len(words)}
+
+
+@router.post("/wordlists/sensitive/import")
+def import_sensitive_words(payload: LintWordlistImport):
+    """追加导入（与已有词库合并去重），不覆盖用户手动添加的词。"""
+    from ..services.lint import load_sensitive_words, parse_wordlist_text, save_sensitive_words
+    existing = load_sensitive_words(_lint_data_dir())
+    merged = sorted(set(existing) | set(parse_wordlist_text(payload.content)))
+    count = save_sensitive_words(_lint_data_dir(), merged)
+    return {"count": count, "added": count - len(existing)}
+
+
+# ---------------------------------------------------------------- naming tool (F9)
+@router.get("/tools/names")
+def generate_names(kind: str = Query("person"), count: int = Query(10, ge=1, le=20)):
+    """本地词库随机起名（人名/地名/门派/功法/丹药）。不调 AI、不上传任何数据。"""
+    from ..services.naming import KIND_LABELS, generate
+    try:
+        names = generate(kind, count, _lint_data_dir())
+    except KeyError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=f"无效的类别「{kind}」，可选：{'、'.join(KIND_LABELS)}",
+        ) from error
+    return {"kind": kind, "label": KIND_LABELS.get(kind, kind), "names": names}
 
 
 # ---------------------------------------------------------------- cross-device export / import (#8)

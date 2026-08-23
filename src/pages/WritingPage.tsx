@@ -1,23 +1,24 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Bot, BrainCircuit, Check, ChevronLeft, ChevronRight, Database, Feather, GripVertical,
-  History, PanelRightClose, Plus, Save, ShieldCheck, Sparkles, Square,
-  Trash2, WandSparkles, X,
+  Bot, BrainCircuit, Check, ChevronLeft, ChevronRight, Database, Dices, Feather,
+  GripVertical, History, Maximize2, Minimize2, MessagesSquare, PanelRightClose, Plus,
+  Save, ScrollText, ShieldCheck, Sparkles, Square, Trash2, WandSparkles, X,
 } from 'lucide-react'
 import {
   runAIStream, workspaceApi,
-  type ChapterSummary, type ChapterVersion, type Workspace,
+  type ChapterSummary, type ChapterVersion, type LintIssue, type Workspace,
 } from '../workspaceApi'
 import type { Page } from '../lib/constants'
-import { fmt } from '../lib/constants'
+import {
+  EDITOR_FONT_STEPS, fmt, readAutosaveMs, readEditorFont, readFocusGoal, writeEditorFont, writeFocusGoal,
+} from '../lib/constants'
 import { confirmDialog } from '../components/Confirm'
 import { toast } from '../components/Toast'
 import { Button, EmptyState, Field, Modal, SearchBox } from '../components/ui'
 import { ModelSelect } from '../components/ModelSelect'
+import { TemplateChips, TemplateManagerModal, usePromptTemplates } from '../components/PromptTemplates'
+import { useEntityList } from '../hooks/useEntityList'
 import { useConnectingTimer, useTotalTimer } from '../hooks/useConnectingTimer'
-
-// 正文字号三档（小 14 / 标准 15 / 大 17），选择持久化在 localStorage。
-const EDITOR_FONT_STEPS = [14, 15, 17] as const
 
 type DraftPage = { start: number; end: number; text: string }
 
@@ -105,21 +106,58 @@ function paginateByHeight(content: string, source: HTMLTextAreaElement, firstHei
 
 export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAssistant, onGoto }:
   { workspace: Workspace; patchWorkspace: (u: (w: Workspace) => Workspace) => void; reload: () => Promise<void>; assistant: boolean; onAssistant: () => void; onGoto: (p: Page) => void }) {
-  const [tab, selectTab] = useState<'quick' | 'agent' | 'ref'>('quick')
+  const [tab, selectTab] = useState<'quick' | 'agent' | 'dialogue' | 'ref'>('quick')
   const [activeId, setActiveId] = useState('')
   const [draftTitle, setDraftTitle] = useState('')
   const [draft, setDraft] = useState('')
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved')
   const [savedAt, setSavedAt] = useState('')
   const [versionsOpen, setVersionsOpen] = useState(false)
+  // ── F1 章节摘要链：摘要编辑/生成弹窗 ──
+  const [summaryOpen, setSummaryOpen] = useState(false)
+  // ── F3 发布前自检：报告弹窗 + 点击条目跳转编辑器定位 ──
+  const [lintOpen, setLintOpen] = useState(false)
+  const [lintJump, setLintJump] = useState<{ start: number; end: number } | null>(null)
+  // ── F4 专注模式：隐藏章节栏/辅助面板/工具栏，只留纸张 + 本次字数目标 HUD ──
+  const [focusOpen, setFocusOpen] = useState(false)
+  // ── F9 命名生成器弹窗 ──
+  const [nameToolOpen, setNameToolOpen] = useState(false)
+  const focusStartWords = useRef(0)
+  const focusGoalHit = useRef(false)
+  const [focusGoal, setFocusGoal] = useState(() => readFocusGoal())
+  const changeFocusGoal = (goal: number) => {
+    const value = Math.max(100, Math.floor(goal) || 1000)
+    setFocusGoal(value)
+    focusGoalHit.current = false
+    writeFocusGoal(value)
+  }
+  const enterFocus = () => {
+    focusStartWords.current = draft.replace(/\s/g, '').length
+    focusGoalHit.current = false
+    setFocusOpen(true)
+  }
+  const exitFocus = () => setFocusOpen(false)
+  // ESC 退出专注（弹窗打开时不抢，Modal 自身的 ESC 优先）。
+  useEffect(() => {
+    if (!focusOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !versionsOpen && !summaryOpen && !lintOpen) exitFocus()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [focusOpen, versionsOpen, summaryOpen, lintOpen])
+  const focusSessionWords = Math.max(0, draft.replace(/\s/g, '').length - focusStartWords.current)
+  useEffect(() => {
+    if (focusOpen && !focusGoalHit.current && focusGoal > 0 && focusSessionWords >= focusGoal) {
+      focusGoalHit.current = true
+      toast.success(`专注目标达成：本次已写 ${focusSessionWords} 字`)
+    }
+  }, [focusOpen, focusSessionWords, focusGoal])
   const [chapterQuery, setChapterQuery] = useState('')
-  const [editorFont, setEditorFont] = useState<number>(() => {
-    const saved = Number(localStorage.getItem('mojing.editorFont'))
-    return EDITOR_FONT_STEPS.includes(saved as 14 | 15 | 17) ? saved : 15
-  })
+  const [editorFont, setEditorFont] = useState<number>(() => readEditorFont())
   const changeEditorFont = (size: number) => {
     setEditorFont(size)
-    localStorage.setItem('mojing.editorFont', String(size))
+    writeEditorFont(size)
   }
   // ── 续写方向选择器（编辑器底部）：AI 出 3 个方向 + 自定义 ──
   const [directions, setDirections] = useState<{ title: string; desc: string }[]>([])
@@ -199,7 +237,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
       await runAIStream('/ai/generate', {
         novel_id: workspace.novel.id, chapter_id: activeChapter?.id, instruction,
         mode: 'continue', target_words: hasSelection ? Math.max(contextBefore.length, 200) : 300,
-        context: { characters: true, locations: false, settings: true, threads: true, recent_chapters: 1 },
+        context: { characters: true, locations: false, settings: true, threads: true, recent_chapters: 1, recap: true },
       }, {
         signal: controller.signal,
         onChunk: delta => {
@@ -285,6 +323,21 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
     : [{ start: 0, end: draft.length, text: draft }]
   const currentPageIndex = Math.min(pageIndex, pages.length - 1)
   const currentPage = pages[currentPageIndex]
+
+  // F3 自检跳转：把章节全局 offset 换算到对应页并选中片段（一页约等于可视区高度，
+  // 选中即可见）。仅响应 lintJump/页码变化——draft 变化不重放，否则打字时会被抢光标。
+  const jumpToOffset = useCallback((offset: number, length: number) => {
+    const page = pages.find(p => offset >= p.start && offset < p.end) ?? pages[pages.length - 1]
+    setPageIndex(Math.max(0, pages.indexOf(page)))
+    setLintJump({ start: offset - page.start, end: offset - page.start + length })
+  }, [pages])
+  useEffect(() => {
+    if (!lintJump || loadingContent) return
+    const ta = manuscriptRef.current
+    if (!ta) return
+    ta.focus({ preventScroll: true })
+    ta.setSelectionRange(Math.min(lintJump.start, ta.value.length), Math.min(lintJump.end, ta.value.length))
+  }, [lintJump, currentPageIndex, loadingContent])
 
   // Debounced pagination: re-measure 300ms after draft stops changing, so rapid
   // typing / streaming AI output doesn't trigger the height-binary-search on
@@ -383,7 +436,8 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
   useEffect(() => {
     if (!activeChapter || !dirty) return
     setSaveState('saving')
-    const timer = window.setTimeout(() => { void persistChapter() }, 1000)
+    // 防抖间隔可调（设置页 → 编辑器 → 自动保存间隔）；每次防抖重读，改完即生效。
+    const timer = window.setTimeout(() => { void persistChapter() }, readAutosaveMs())
     return () => window.clearTimeout(timer)
     // 依赖 draft/draftTitle（而非聚合的 dirty 布尔）：防抖窗口要在每次编辑时重置。
   }, [dirty, draftTitle, draft, activeChapter?.id])
@@ -491,13 +545,19 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
     return out
   }
 
-  return <div className="writing-page">
+  return <div className={'writing-page' + (focusOpen ? ' focus' : '')}>
     <aside className="chapters-pane"><div className="pane-title"><div><label>{workspace.novel.title}</label><strong>章节目录</strong></div><button onClick={createChapter}><Plus size={16} /></button></div><SearchBox text="搜索章节" value={chapterQuery} onChange={setChapterQuery} />
       <div className="chapter-list">{visibleChapters.map(chapter => <button className={chapter.id === activeId ? 'active' : ''} key={chapter.id} onClick={() => void selectChapter(chapter)}><GripVertical size={13} /><b>{String(chapter.order).padStart(2, '0')}</b><span><strong>{chapter.title}</strong><small>{fmt(chapter.word_count)} 字</small></span>{chapter.status === 'completed' && <Check size={12} />}</button>)}{query && visibleChapters.length === 0 && <p className="chapter-search-empty">没有匹配「{query}」的章节</p>}</div>
       <button className="new-chapter" onClick={createChapter}><Plus size={14} />新建章节</button>
     </aside>
-    <section className="editor"><div className="editor-toolbar">
-      <button onClick={deleteChapter} title="删除当前章节" aria-label="删除当前章节"><Trash2 size={15} /></button><button onClick={() => setVersionsOpen(true)} title="版本历史" aria-label="版本历史"><History size={15} /></button><i />
+    <section className="editor">
+      {focusOpen && <div className="focus-hud" aria-label="专注模式状态">
+        <div className="focus-goal"><span>本次 <b>{focusSessionWords}</b> / {focusGoal} 字</span><i style={{ width: Math.min(100, (focusSessionWords / focusGoal) * 100) + '%' }} /></div>
+        <button onClick={() => changeFocusGoal(focusGoal + 500)} onContextMenu={e => { e.preventDefault(); changeFocusGoal(Math.max(100, focusGoal - 500)) }} title="左键 +500 / 右键 -500">目标 {focusGoal} 字</button>
+        <button onClick={exitFocus}><Minimize2 size={14} />退出专注<kbd>Esc</kbd></button>
+      </div>}
+      <div className="editor-toolbar">
+      <button onClick={deleteChapter} title="删除当前章节" aria-label="删除当前章节"><Trash2 size={15} /></button><button onClick={() => setVersionsOpen(true)} title="版本历史" aria-label="版本历史"><History size={15} /></button><button onClick={() => setSummaryOpen(true)} title="章节摘要" aria-label="章节摘要"><ScrollText size={15} /></button><button onClick={() => setLintOpen(true)} title="发布自检" aria-label="发布自检"><ShieldCheck size={15} /></button><i />
       <span>第 {String(activeChapter.order).padStart(2, '0')} 章 <ChevronRight size={12} /> <strong>{draftTitle || '未命名章节'}</strong></span><b />
       <div className="font-steps" role="group" aria-label="正文字号">
         {EDITOR_FONT_STEPS.map(size => (
@@ -508,6 +568,8 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
       <em className={saveState}><Check size={12} />{loadingContent ? '正在加载…' : saveState === 'saving' ? '正在保存…' : saveState === 'error' ? '保存失败' : `已保存 ${savedAt}`}</em>
       <button onClick={() => void persistChapter()}><Save size={14} />保存<kbd>⌘S</kbd></button>
       <button onClick={() => onGoto('threads')} title="伏笔看板" aria-label="伏笔看板"><BrainCircuit size={14} /></button>
+      <button onClick={() => setNameToolOpen(true)} title="起名工具（本地词库，不消耗 token）" aria-label="起名工具"><Dices size={15} /></button>
+      <button onClick={enterFocus} title="专注模式（隐藏侧栏与面板，只留正文）" aria-label="专注模式"><Maximize2 size={14} /></button>
       <button className={'assist-toggle ' + (assistant ? 'active' : '')} onClick={onAssistant}><WandSparkles size={14} />辅助中心</button>
     </div>
        <div className="paper-wrap"><article ref={paperRef} className="paper editable-paper" style={{ '--ms-font': `${editorFont}px` } as React.CSSProperties}>
@@ -567,8 +629,11 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
          {direction && <button className="dir-clear" title="清除方向" onClick={() => setDirection('')}><X size={12} /></button>}
        </div>
     </section>
-    {assistant && <aside className="assistant"><div className="assistant-title"><span><Sparkles size={14} /></span><strong>辅助中心</strong><button onClick={onAssistant}><PanelRightClose size={15} /></button></div><div className="assistant-tabs"><button className={tab === 'quick' ? 'active' : ''} onClick={() => selectTab('quick')}>快捷生成</button><button className={tab === 'agent' ? 'active' : ''} onClick={() => selectTab('agent')}>Agent</button><button className={tab === 'ref' ? 'active' : ''} onClick={() => selectTab('ref')}>参考</button></div>{tab === 'quick' ? <QuickAI workspace={workspace} chapter={activeChapter} direction={direction} onAccept={acceptText} /> : tab === 'agent' ? <AgentPanel workspace={workspace} onAccept={acceptText} /> : <ReferencePanel />}</aside>}
+    {assistant && <aside className="assistant"><div className="assistant-title"><span><Sparkles size={14} /></span><strong>辅助中心</strong><button onClick={onAssistant}><PanelRightClose size={15} /></button></div><div className="assistant-tabs"><button className={tab === 'quick' ? 'active' : ''} onClick={() => selectTab('quick')}>快捷生成</button><button className={tab === 'agent' ? 'active' : ''} onClick={() => selectTab('agent')}>Agent</button><button className={tab === 'dialogue' ? 'active' : ''} onClick={() => selectTab('dialogue')}>对话</button><button className={tab === 'ref' ? 'active' : ''} onClick={() => selectTab('ref')}>参考</button></div>{tab === 'quick' ? <QuickAI workspace={workspace} chapter={activeChapter} direction={direction} onAccept={acceptText} /> : tab === 'agent' ? <AgentPanel workspace={workspace} onAccept={acceptText} /> : tab === 'dialogue' ? <DialoguePanel workspace={workspace} onAccept={acceptText} /> : <ReferencePanel />}</aside>}
     {versionsOpen && <VersionHistory chapter={activeChapter} onClose={() => setVersionsOpen(false)} onRolled={async () => { setVersionsOpen(false); await reload(); void loadContent(activeChapter.id, activeChapter.title) }} />}
+    {summaryOpen && <ChapterSummaryDialog novelId={workspace.novel.id} chapterId={activeChapter.id} order={activeChapter.order} title={draftTitle || activeChapter.title} onClose={() => setSummaryOpen(false)} />}
+    {lintOpen && <LintDialog novelId={workspace.novel.id} chapter={activeChapter} onJump={jumpToOffset} onClose={() => setLintOpen(false)} />}
+    {nameToolOpen && <NameToolDialog onClose={() => setNameToolOpen(false)} />}
   </div>
 }
 
@@ -601,7 +666,10 @@ const QuickAI = memo(function QuickAI({ workspace, chapter, direction, onAccept 
   const [mode, setMode] = useState<'continue' | 'polish' | 'expand'>('continue')
   const [target, setTarget] = useState('800')
   const [modelId, setModelId] = useState<number | null>(null)
-  const [ctx, setCtx] = useState({ characters: true, locations: false, settings: true, threads: true, recent_chapters: 2, prior_chapters: true, library: true })
+  const [ctx, setCtx] = useState({ characters: true, locations: false, settings: true, threads: true, recent_chapters: 2, prior_chapters: true, library: true, recap: true, timeline: false })
+  // F6 自定义 Prompt 模板：点击填入写作要求；管理弹窗负责增删改。
+  const { templates, reload: reloadTemplates } = usePromptTemplates()
+  const [tplOpen, setTplOpen] = useState(false)
   const [output, setOutput] = useState('')
   const [model, setModel] = useState('')
   // 'connecting' = waiting for the first token (cold start can take ~10-20s on
@@ -669,6 +737,7 @@ const QuickAI = memo(function QuickAI({ workspace, chapter, direction, onAccept 
   return <div className="assist-body">
     {direction && <div className="dir-hint" title={direction}><WandSparkles size={12} />已选续写方向：{direction.split('：')[0]}</div>}
     <div className="assist-intro"><span><WandSparkles size={18} /></span><div><strong>接下来想怎么写？</strong><p>结合当前章节和作品资料生成草稿。</p></div></div>
+    <TemplateChips templates={templates} onApply={content => setInstruction(content)} onManage={() => setTplOpen(true)} />
     <label>写作要求</label>
     <div className="prompt"><textarea value={instruction} maxLength={500} onChange={e => setInstruction(e.target.value)} /><footer><span>{instruction.length} / 500</span></footer></div>
     <ModelSelect value={modelId} onChange={setModelId} />
@@ -677,7 +746,7 @@ const QuickAI = memo(function QuickAI({ workspace, chapter, direction, onAccept 
       <Field label="目标长度"><select className={selectCls} value={target} onChange={e => setTarget(e.target.value)}><option value="400">约 400 字</option><option value="800">约 800 字</option><option value="1200">约 1200 字</option></select></Field>
     </div>
     <div className="context-box"><p><Database size={13} /><strong>本次上下文</strong></p>
-      <div>{(['characters', 'locations', 'settings', 'threads', 'prior_chapters', 'library'] as const).map(k => <button key={k} className={ctx[k] ? 'active' : ''} onClick={() => setCtx(c => ({ ...c, [k]: !c[k] }))}>{({ characters: '角色', locations: '地点', settings: '世界观', threads: '伏笔', prior_chapters: '前文', library: '资料' })[k]}</button>)}</div>
+      <div>{(['characters', 'locations', 'settings', 'threads', 'prior_chapters', 'library', 'recap', 'timeline'] as const).map(k => <button key={k} className={ctx[k] ? 'active' : ''} onClick={() => setCtx(c => ({ ...c, [k]: !c[k] }))}>{({ characters: '角色', locations: '地点', settings: '世界观', threads: '伏笔', prior_chapters: '前文', library: '资料', recap: '提要', timeline: '时间线' })[k]}</button>)}</div>
     </div>
     <div className="ai-generate-row">
       <button className="generate" onClick={generate} disabled={phase !== 'idle'}><Sparkles size={15} />{phase === 'connecting' ? '正在连接模型…' : phase === 'streaming' ? '正在生成…' : '生成可审阅草稿'}<kbd>⌘ ↵</kbd></button>
@@ -689,6 +758,7 @@ const QuickAI = memo(function QuickAI({ workspace, chapter, direction, onAccept 
     {output && <div className={'ai-output' + (phase === 'streaming' ? ' streaming' : '')}>{output}</div>}
     {output && phase === 'idle' && <div className="ai-actions"><Button onClick={() => setOutput('')}>丢弃</Button><Button kind="primary" onClick={accept}><Check size={14} />采纳并插入</Button></div>}
     <small className="safe-note"><ShieldCheck size={13} />不会自动写入正文，确认后才会应用。</small>
+    {tplOpen && <TemplateManagerModal onClose={() => setTplOpen(false)} onChanged={reloadTemplates} />}
   </div>
 })
 
@@ -739,8 +809,7 @@ function ReferencePanel() {
   return <div className="assist-body"><SearchBox text="搜索书籍、章节和资料…" /></div>
 }
 
-function VersionHistory({ chapter, onClose, onRolled }: { chapter: ChapterSummary; onClose: () => void; onRolled: () => Promise<void> }) {
-  const [versions, setVersions] = useState<ChapterVersion[]>([])
+function VersionHistory({ chapter, onClose, onRolled }: { chapter: ChapterSummary; onClose: () => void; onRolled: () => Promise<void> }) {  const [versions, setVersions] = useState<ChapterVersion[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [busy, setBusy] = useState('')
@@ -766,6 +835,307 @@ function VersionHistory({ chapter, onClose, onRolled }: { chapter: ChapterSummar
       {loadError && !loading && <p className="form-error">{loadError}</p>}
       {!loading && !loadError && versions.length === 0 && <EmptyState icon={History} title="还没有历史版本" desc="编辑并保存本章后会自动生成快照。" />}
       {versions.map(v => <div className="version-row" key={v.id}><b>v{v.version_number}</b><strong>{fmt(v.word_count)} 字 · {new Date(v.created_at).toLocaleString('zh-CN')}</strong><span className={'tag ' + v.label}>{v.label === 'rollback' ? '回滚前' : '自动'}</span><Button onClick={() => roll(v.id)} disabled={busy === v.id}>{busy === v.id ? '回滚中…' : '回滚到此版本'}</Button></div>)}
+    </div>
+  </Modal>
+}
+
+/** F1 章节摘要链：查看/手改/AI 生成当前章摘要，保存后作为前情提要的数据源。
+ *  AI 生成走 /ai/summarize-chapter 流式接口，生成结果先进编辑框——用户可改
+ *  再保存，避免未审阅的摘要直接落库。 */
+function ChapterSummaryDialog({ novelId, chapterId, order, title, onClose }: {
+  novelId: string; chapterId: string; order: number; title: string; onClose: () => void
+}) {
+  const [summary, setSummary] = useState('')
+  const [savedAt, setSavedAt] = useState<string | null>(null)
+  const [stale, setStale] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [phase, setPhase] = useState<'idle' | 'connecting' | 'streaming'>('idle')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    workspaceApi.getChapter(chapterId).then(full => {
+      if (cancelled) return
+      setSummary(full.summary ?? '')
+      const summaryAt = full.summary_updated_at ? new Date(full.summary_updated_at) : null
+      setSavedAt(summaryAt ? summaryAt.toLocaleString('zh-CN') : null)
+      // 正文在摘要之后又改过 → 提示"摘要可能过期"。
+      setStale(!!summaryAt && new Date(full.updated_at) > summaryAt)
+    }).catch(() => { /* 读取失败时仍允许手写保存 */ })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [chapterId])
+
+  const generate = async () => {
+    setSummary(''); setError(''); setPhase('connecting')
+    const controller = new AbortController()
+    abortRef.current = controller
+    let received = ''
+    try {
+      await runAIStream('/ai/summarize-chapter', {
+        novel_id: novelId, chapter_id: chapterId, mode: 'summarize', target_words: 300,
+      }, {
+        signal: controller.signal,
+        onChunk: text => { received += text; setSummary(received); setPhase('streaming') },
+      })
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === 'AbortError')) setError(e instanceof Error ? e.message : '生成失败')
+    } finally {
+      setPhase('idle'); abortRef.current = null
+      if (!received.trim()) setError(cur => cur || '模型未返回内容，请重试。')
+    }
+  }
+
+  const save = async () => {
+    setBusy(true)
+    try {
+      const updated = await workspaceApi.updateChapter(chapterId, { summary })
+      toast.success(updated.summary.trim() ? '章节摘要已保存' : '章节摘要已清空')
+      onClose()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '保存失败')
+    } finally { setBusy(false) }
+  }
+
+  return <Modal eyebrow="章节摘要" title={`第 ${order} 章 · ${title}`} icon={ScrollText} onClose={onClose}
+    footer={<div className="form-actions">
+      <span className="muted">{stale ? '正文在摘要之后有修改，摘要可能过期' : savedAt ? `摘要更新于 ${savedAt}` : '摘要会作为 AI 续写的前情提要数据源'}</span>
+      {phase === 'idle'
+        ? <Button onClick={() => void generate()}><Sparkles size={14} />AI 生成摘要</Button>
+        : <Button onClick={() => abortRef.current?.abort()}><Square size={14} />停止</Button>}
+      {error && <span className="form-error">{error}</span>}
+      <Button onClick={onClose}>取消</Button>
+      <Button kind="primary" onClick={() => void save()} disabled={busy || loading}>{busy ? '保存中…' : '保存摘要'}</Button>
+    </div>}>
+    <div className="form-body">
+      <label className="form-field"><span>剧情摘要（可手写，建议 200–300 字）</span>
+        <textarea className="form-textarea" style={{ minHeight: 160 }} value={summary}
+          onChange={e => setSummary(e.target.value)} maxLength={1000}
+          placeholder={phase !== 'idle' ? 'AI 正在生成…' : '概括本章的关键事件、出场角色与伏笔推进。留空保存即清除摘要。'} />
+      </label>
+      <footer style={{ display: 'flex', justifyContent: 'space-between', color: '#999', fontSize: 11 }}>
+        <span>前情提要 = 更早章节的摘要串 + 最近章节结尾，续写时自动注入</span>
+        <span>{summary.length} / 1000</span>
+      </footer>
+    </div>
+  </Modal>
+}
+
+const LINT_TYPE_META: Record<LintIssue['type'], { label: string; tone: string }> = {
+  sensitive: { label: '敏感词', tone: 'danger' },
+  duplicate: { label: '疑似叠字', tone: 'warn' },
+  punct: { label: '标点规范', tone: 'warn' },
+}
+
+/** F9 起名工具：本地词库随机组合（不消耗 token），点击复制。 */
+const NAME_KINDS: { id: string; label: string }[] = [
+  { id: 'person', label: '人名' }, { id: 'place', label: '地名' }, { id: 'sect', label: '门派' },
+  { id: 'skill', label: '功法' }, { id: 'pill', label: '丹药' },
+]
+
+function NameToolDialog({ onClose }: { onClose: () => void }) {
+  const [kind, setKind] = useState('person')
+  const [names, setNames] = useState<string[]>([])
+  const [loading, setLoading] = useState(false)
+  const fetchNames = useCallback(async (k: string) => {
+    setLoading(true)
+    try {
+      setNames((await workspaceApi.generateNames(k, 12)).names)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '生成失败')
+    } finally { setLoading(false) }
+  }, [])
+  useEffect(() => { void fetchNames(kind) }, [kind, fetchNames])
+  const copy = (name: string) => {
+    navigator.clipboard?.writeText(name)
+      .then(() => toast.success(`已复制「${name}」`))
+      .catch(() => { /* 剪贴板被占用时静默 */ })
+  }
+  return <Modal eyebrow="起名工具" title="本地词库随机起名" icon={Dices} onClose={onClose}
+    footer={<div className="form-actions">
+      <span className="muted">纯本地词库组合，不消耗 token；可在数据目录 wordlists/names.json 补充词库</span>
+      <Button onClick={() => void fetchNames(kind)} disabled={loading}>{loading ? '生成中…' : '换一批'}</Button>
+      <Button kind="primary" onClick={onClose}>关闭</Button>
+    </div>}>
+    <div className="form-body">
+      <div className="chips">
+        {NAME_KINDS.map(k => <button key={k.id} className={kind === k.id ? 'active' : ''} onClick={() => setKind(k.id)}>{k.label}</button>)}
+      </div>
+      <div className="name-grid">
+        {names.map(n => <button key={n} onClick={() => copy(n)} title="点击复制">{n}</button>)}
+        {loading && names.length === 0 && <p style={{ color: '#999', fontSize: 11 }}>生成中…</p>}
+      </div>
+    </div>
+  </Modal>
+}
+
+/** F10 多角色对话生成：勾选 2–4 个角色 + 一句场景，按各自性格生成对话场景。 */
+const DialoguePanel = memo(function DialoguePanel({ workspace, onAccept }: { workspace: Workspace; onAccept: (t: string) => void }) {
+  const { items: people } = useEntityList('characters', workspace.novel.id, workspaceApi.listCharacters)
+  const [selected, setSelected] = useState<string[]>([])
+  const [scene, setScene] = useState('')
+  const [output, setOutput] = useState('')
+  const [phase, setPhase] = useState<'idle' | 'connecting' | 'streaming'>('idle')
+  const [error, setError] = useState('')
+  const [modelId, setModelId] = useState<number | null>(null)
+  const total = useTotalTimer(phase !== 'idle')
+  const abortRef = useRef<AbortController | null>(null)
+
+  const toggle = (id: string) => setSelected(cur =>
+    cur.includes(id) ? cur.filter(x => x !== id) : cur.length >= 4 ? cur : [...cur, id])
+
+  const run = async () => {
+    setOutput(''); setError(''); setPhase('connecting')
+    const controller = new AbortController()
+    abortRef.current = controller
+    let received = ''
+    let failed = false
+    try {
+      await runAIStream('/ai/dialogue', {
+        novel_id: workspace.novel.id,
+        character_ids: selected,
+        scene,
+        config_id: modelId,
+        mode: 'dialogue',
+      }, {
+        signal: controller.signal,
+        onChunk: text => { received += text; setOutput(received); setPhase('streaming') },
+      })
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === 'AbortError')) { failed = true; setError(e instanceof Error ? e.message : '生成失败') }
+    } finally {
+      setPhase('idle'); abortRef.current = null
+      if (!received.trim() && !failed) setError('模型未返回内容（连接可能中断），请重试。')
+    }
+  }
+
+  return <div className="assist-body">
+    <div className="assist-intro"><span><MessagesSquare size={18} /></span><div><strong>让角色自己说话</strong><p>选 2–4 位角色，AI 按各自性格写一段对话。</p></div></div>
+    <label>参与角色（{selected.length}/4）</label>
+    <div className="dialogue-picks">
+      {people.length === 0 && <p className="idea-empty">还没有角色——先去角色页创建。</p>}
+      {people.map(p => (
+        <button key={p.id} className={selected.includes(p.id) ? 'active' : ''} onClick={() => toggle(p.id)}>
+          <b style={{ background: p.color }}>{p.name.slice(0, 1)}</b>{p.name}
+        </button>
+      ))}
+    </div>
+    <label>场景一句话</label>
+    <div className="prompt"><textarea value={scene} maxLength={500} onChange={e => setScene(e.target.value)}
+      placeholder="如：雨夜酒楼对坐，柳三变试探沈砚旧案的底。" /></div>
+    <ModelSelect value={modelId} onChange={setModelId} />
+    <div className="ai-generate-row">
+      <button className="generate" onClick={run} disabled={phase !== 'idle' || selected.length < 2}>
+        <MessagesSquare size={15} />{phase === 'connecting' ? '正在连接模型…' : phase === 'streaming' ? '生成中…' : '生成对话场景'}
+      </button>
+      {phase !== 'idle' && <button className="generate stop" onClick={() => abortRef.current?.abort()}><Square size={14} />停止</button>}
+    </div>
+    {phase === 'connecting' && <PanelConnectLine />}
+    {(output || error) && <div className="ai-meta"><Sparkles size={12} />{phase !== 'idle' && <span>生成中 {output.length} 字 · {total} 秒</span>}</div>}
+    {error && <div className="form-error">{error}</div>}
+    {output && <div className={'ai-output' + (phase === 'streaming' ? ' streaming' : '')}>{output}</div>}
+    {output && phase === 'idle' && <div className="ai-actions"><Button onClick={() => setOutput('')}>丢弃</Button><Button kind="primary" onClick={() => { onAccept(output.trim()); setOutput('') }}><Check size={14} />采纳并插入</Button></div>}
+    <small className="safe-note"><ShieldCheck size={13} />对话按角色卡的性格与关系生成，采纳前可自行调整。</small>
+  </div>
+})
+
+/** F3 发布前自检：本地检查报告（敏感词库由用户手动维护）+ 词库管理。
+ *  点击条目跳到编辑器对应位置（LintDialog 只负责报 offset，定位换算在写作页）。 */
+function LintDialog({ novelId, chapter, onJump, onClose }: {
+  novelId: string; chapter: ChapterSummary; onJump: (offset: number, length: number) => void; onClose: () => void
+}) {
+  const [issues, setIssues] = useState<LintIssue[] | null>(null)
+  const [running, setRunning] = useState(false)
+  const [error, setError] = useState('')
+  const [words, setWords] = useState<string[]>([])
+  const [newWord, setNewWord] = useState('')
+  const [wordBusy, setWordBusy] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const run = useCallback(() => {
+    setRunning(true); setError('')
+    workspaceApi.lintChapter(novelId, chapter.id)
+      .then(r => setIssues(r.issues))
+      .catch(e => setError(e instanceof Error ? e.message : '自检失败'))
+      .finally(() => setRunning(false))
+  }, [novelId, chapter.id])
+  useEffect(() => {
+    run()
+    workspaceApi.getSensitiveWords().then(d => setWords(d.words)).catch(() => { /* 词库非关键 */ })
+  }, [run])
+
+  const addWord = async () => {
+    const w = newWord.trim()
+    if (!w) return
+    setWordBusy(true)
+    try {
+      const saved = await workspaceApi.saveSensitiveWords([...new Set([...words, w])])
+      setWords(saved.words); setNewWord(''); run()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '添加失败')
+    } finally { setWordBusy(false) }
+  }
+  const importFile = async (file: File) => {
+    setWordBusy(true)
+    try {
+      const content = await file.text()
+      const res = await workspaceApi.importSensitiveWords(content)
+      toast.success(`导入完成：新增 ${res.added} 词（共 ${res.count} 词）`)
+      setWords((await workspaceApi.getSensitiveWords()).words)
+      run()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '导入失败')
+    } finally { setWordBusy(false) }
+  }
+  const clearWords = async () => {
+    const ok = await confirmDialog({ title: '清空敏感词库', message: '将删除全部自定义敏感词，自检将不再报告敏感词。', danger: true, confirmLabel: '清空' })
+    if (!ok) return
+    setWordBusy(true)
+    try {
+      const saved = await workspaceApi.saveSensitiveWords([])
+      setWords(saved.words); run()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '清空失败')
+    } finally { setWordBusy(false) }
+  }
+
+  const groups = (['sensitive', 'duplicate', 'punct'] as const)
+    .map(type => ({ type, items: (issues ?? []).filter(i => i.type === type) }))
+    .filter(g => g.items.length > 0)
+
+  return <Modal eyebrow="发布自检" title={`第 ${chapter.order} 章 · ${chapter.title}`} icon={ShieldCheck} onClose={onClose}
+    footer={<div className="form-actions">
+      <span className="muted">纯本地检查，不上传正文；叠字与混用标点仅提示，请人工确认</span>
+      {error && <span className="form-error">{error}</span>}
+      <Button onClick={run} disabled={running}>{running ? '检查中…' : '重新检查'}</Button>
+      <Button kind="primary" onClick={onClose}>关闭</Button>
+    </div>}>
+    <div className="form-body" style={{ maxHeight: 420, overflow: 'auto' }}>
+      {running && issues === null && <p style={{ color: '#999', fontSize: 11 }}>正在检查本章…</p>}
+      {issues !== null && groups.length === 0 && !error &&
+        <EmptyState icon={ShieldCheck} title="未发现问题" desc="叠字、标点规范与自定义敏感词均通过。" />}
+      {groups.map(g => <div key={g.type} className="lint-group">
+        <header><b className={'lint-badge ' + LINT_TYPE_META[g.type].tone}>{LINT_TYPE_META[g.type].label}</b><span>{g.items.length} 处</span></header>
+        {g.items.map((issue, i) => <button key={i} className="lint-issue" onClick={() => onJump(issue.offset, issue.word.length)}>
+          <span>{issue.message}</span><small>第 {issue.offset + 1} 字</small>
+        </button>)}
+      </div>)}
+      <div className="lint-wordlist">
+        <header><b>自定义敏感词</b><span>{words.length} 词 · 仅存本地，不上传</span></header>
+        <div className="lint-wordlist-row">
+          <input value={newWord} onChange={e => setNewWord(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void addWord() } }}
+            placeholder="输入敏感词后回车添加" disabled={wordBusy} aria-label="添加敏感词" />
+          <Button onClick={() => void addWord()} disabled={wordBusy || !newWord.trim()}>添加</Button>
+          <Button onClick={() => fileRef.current?.click()} disabled={wordBusy}>导入 txt</Button>
+          {words.length > 0 && <Button kind="danger" onClick={() => void clearWords()} disabled={wordBusy}>清空</Button>}
+        </div>
+        {words.length > 0 && <p className="lint-wordlist-preview">{words.slice(0, 50).join('、')}{words.length > 50 ? ` …（共 ${words.length} 词）` : ''}</p>}
+        <input ref={fileRef} type="file" accept=".txt" style={{ display: 'none' }} aria-hidden="true"
+          onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void importFile(f) }} />
+      </div>
     </div>
   </Modal>
 }

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ElementType } from 'react'
 import {
   BookOpen, Check, ChevronDown, ChevronRight, CloudOff, Command,
-  Feather, HardDrive, LibraryBig, Minimize2, Moon, PanelLeftClose, PenLine,
+  Feather, HardDrive, LibraryBig, Lightbulb, Minimize2, Moon, PanelLeftClose, PenLine,
   Plus, Search, Settings, Square, Sun, BrainCircuit, Users, Globe2, X,
 } from 'lucide-react'
 import type { Nav, Page } from '../lib/constants'
@@ -36,8 +36,8 @@ export function TitleBar({ onCommand, novel, theme, onToggleTheme }: { onCommand
   </header>
 }
 
-export function Sidebar({ page, collapsed, onPage, onCollapse, novel, novels, onSwitchNovel, onManageBooks, dataNav, creationNav, unresolvedMajor }:
-  { page: Page; collapsed: boolean; onPage: (p: Page) => void; onCollapse: () => void; novel: Novel; novels: Novel[]; onSwitchNovel: (id: string) => void; onManageBooks: () => void; dataNav: Nav[]; creationNav: Nav[]; unresolvedMajor: number }) {
+export function Sidebar({ page, collapsed, onPage, onCollapse, novel, novels, onSwitchNovel, onManageBooks, dataNav, creationNav, unresolvedMajor, onInbox }:
+  { page: Page; collapsed: boolean; onPage: (p: Page) => void; onCollapse: () => void; novel: Novel; novels: Novel[]; onSwitchNovel: (id: string) => void; onManageBooks: () => void; dataNav: Nav[]; creationNav: Nav[]; unresolvedMajor: number; onInbox: () => void }) {
   const items = (list: Nav[]) => list.map(({ id, label, icon: Icon, count }) =>
     <button key={id} title={collapsed ? label : ''} className={'nav-item ' + (page === id ? 'active' : '')} onClick={() => onPage(id)}>
       <Icon size={17} />{!collapsed && <><span>{label}</span>{count !== undefined && count > 0 && <small>{count}</small>}</>}
@@ -46,6 +46,7 @@ export function Sidebar({ page, collapsed, onPage, onCollapse, novel, novels, on
     <BookSwitcher novel={novel} novels={novels} collapsed={collapsed} onSwitch={onSwitchNovel} onManageBooks={onManageBooks} />
     <div className="nav-scroll">{!collapsed && <label>创作</label>}{items(creationNav)}{!collapsed && <label className="spaced">资料</label>}{items(dataNav)}{!collapsed && unresolvedMajor > 0 && <em className="nav-warn">{unresolvedMajor} 条主线待收束</em>}</div>
     <div className="sidebar-foot">
+      <button className="nav-item" onClick={onInbox} title="灵感收集箱"><Lightbulb size={17} />{!collapsed && <span>灵感箱</span>}</button>
       <button className={'nav-item ' + (page === 'library' ? 'active' : '')} onClick={() => onPage('library')}><LibraryBig size={17} />{!collapsed && <span>参考资料库</span>}</button>
       <button className={'nav-item ' + (page === 'settings' ? 'active' : '')} onClick={() => onPage('settings')}><Settings size={17} />{!collapsed && <span>设置</span>}</button>
       <button className="nav-item" onClick={onCollapse}>{collapsed ? <ChevronRight size={17} /> : <PanelLeftClose size={17} />}{!collapsed && <span>收起侧栏</span>}</button>

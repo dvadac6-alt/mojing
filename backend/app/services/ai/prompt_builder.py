@@ -62,6 +62,9 @@ def build_messages(
     context: AIContextOptions,
     current_content: str = "",
     rag_chunks: list | None = None,
+    recap_text: str | None = None,
+    timeline_lines: str | None = None,
+    style_note: str | None = None,
 ) -> list[dict[str, str]]:
     characters = list(database.scalars(select(Character).where(Character.novel_id == novel.id)).all())
     locations = list(database.scalars(select(Location).where(Location.novel_id == novel.id)).all())
@@ -87,12 +90,19 @@ def build_messages(
         if refs:
             lines = "\n\n".join(f"【{c['title']}】\n{c['text']}" for c in refs)
             sections.append("## 参考资料片段（外部素材，仅供知识与文风参考，不要照抄）\n" + lines)
+    # ── F1 前情提要：更早章节的摘要主线，插在最近剧情之前 ──
+    if recap_text:
+        sections.append("## 前情提要（更早章节的剧情主线，写作时保持一致）\n" + recap_text)
+    # ── F8 时间线：当前章前后的已发生事件，事件先后不可矛盾 ──
+    if timeline_lines:
+        sections.append("## 时间线（已发生的大事，写作时不得与先后顺序矛盾）\n" + timeline_lines)
     sections.append("## 最近剧情（前文摘要）\n" + _recent_chapter_summary(database, novel.id, context.recent_chapters))
 
     system = (
         f"你是专业的小说作家，擅长{novel.genre or '悬疑'}类型小说，文风细腻、克制。"
         f"当前你正在协助创作《{novel.title}》。{novel.description}\n\n"
         + "\n\n".join(sections)
+        + (f"\n\n{style_note}" if style_note else "")
     )
 
     task_map = {
@@ -111,6 +121,9 @@ def build_messages(
                           "补充该设定的来历、具体特征、与小说角色/地点/伏笔的联系。"
                           "保持文风与已有设定一致，不得改变原有内容的核心含义，不得杜撰与现有设定冲突的内容。"
                           "只输出扩写后的详细说明正文，不要输出名称、分类或任何解释。",
+        # F1 章节摘要链：为当前正文生成剧情摘要（前端流式接收后经 PUT /chapters 落盘）
+        "summarize": f"请为当前正文写一份 {target_words} 字以内的剧情摘要：概括本章发生的关键事件、"
+                     "出场角色、以及伏笔的推进或收束。只输出摘要正文，不要标题、列表或解释。",
     }
     task = task_map.get(mode, task_map["continue"])
     user = (f"{instruction.strip()}\n\n" if instruction.strip() else "") + task

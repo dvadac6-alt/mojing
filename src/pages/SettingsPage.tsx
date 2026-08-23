@@ -1,12 +1,16 @@
-import { useEffect, useRef, useState, type ElementType } from 'react'
+import { useCallback, useEffect, useRef, useState, type ElementType, type ReactNode } from 'react'
 import {
-  Bot, BrainCircuit, Check, CircleHelp, Database, Download, Feather,
-  FileText, HardDrive, MapPin, PenLine, Plus, RefreshCw, Settings, ShieldCheck, Trash2, Upload,
+  Bot, Check, CircleHelp, Database, Download, HardDrive, MapPin, PenLine, Plus, RefreshCw, Settings, ShieldCheck, Trash2, Upload,
 } from 'lucide-react'
 import {
   chooseDataDirectory, workspaceApi,
   type AIConfig, type StorageInfo, type Workspace,
 } from '../workspaceApi'
+import {
+  AUTOSAVE_MS_STEPS, EDITOR_FONT_STEPS, readAutosaveMs, readEditorFont, readFocusGoal,
+  readPresenceGap, writeAutosaveMs, writeEditorFont, writeFocusGoal, writePresenceGap,
+} from '../lib/constants'
+import { useTheme } from '../hooks/useTheme'
 import { areaCls, inputCls, selectCls } from '../lib/constants'
 import { Button, Field, FormFooter, Modal, PageHeader, Scroll } from '../components/ui'
 import { useAsyncAction } from '../hooks/useAsyncAction'
@@ -24,12 +28,106 @@ export function SettingsPage({ workspace, reload }: { workspace: Workspace; relo
     <section>
       {active === 'AI 模型' && <AISection onSaved={reload} />}
       {active === '导出' && <ExportSection workspace={workspace} />}
-      {active === '通用' && <PageHeader title="通用设置" desc="这些设置只保存在当前 Windows 用户配置中。" />}
-      {active === '编辑器' && <PageHeader title="编辑器设置" desc="字号、主题与自动保存间隔。" />}
+      {active === '通用' && <GeneralSection />}
+      {active === '编辑器' && <EditorSection />}
       {active === '数据与备份' && <DataSection reload={reload} />}
       {active === '关于' && <AboutSection />}
     </section>
   </div>
+}
+
+/** 设置卡片：标题/说明放进卡片内，与行内容共用同一内边距，左右边缘严格对齐。 */
+function PrefCard({ title, desc, children }: { title: string; desc: string; children: ReactNode }) {
+  return <section className="pref-card">
+    <header><h2>{title}</h2><p>{desc}</p></header>
+    {children}
+  </section>
+}
+
+/** 偏好设置行：左侧标题+单行说明，右侧控件（grid 布局，控件永不换行掉到文字下方）。 */
+function PrefRow({ label, hint, children }: { label: string; hint?: string; children?: ReactNode }) {
+  return <div className="pref-row">
+    <div className="pref-label"><strong>{label}</strong>{hint && <small>{hint}</small>}</div>
+    {children && <div className="pref-ctrl">{children}</div>}
+  </div>
+}
+
+/** 通用设置：跨作品的全局偏好（存于本机 localStorage，不上传）。 */
+function GeneralSection() {
+  const [gap, setGap] = useState(readPresenceGap)
+  const changeGap = (delta: number) => {
+    const next = Math.max(1, Math.min(99, gap + delta))
+    setGap(next)
+    writePresenceGap(next)
+  }
+  return <Scroll>
+    <div style={{ maxWidth: 'min(720px, 100%)', margin: '0 auto' }}>
+      <PageHeader eyebrow="应用偏好" title="通用设置" desc="这些设置只保存在当前设备，不上传任何数据。" />
+      <div className="pref-list">
+        <PrefCard title="角色登场提醒" desc="角色超过阈值章数未在正文登场时，概览页与角色列表会标记提醒。">
+          <PrefRow label="空窗提醒阈值" hint={`当前 ${gap} 章，也可在角色页单独调整`}>
+            <div className="pref-stepper" role="group" aria-label="空窗提醒阈值">
+              <button onClick={() => changeGap(1)} aria-label="增加一章">＋</button>
+              <span className="pref-value">{gap}<small>章</small></span>
+              <button onClick={() => changeGap(-1)} aria-label="减少一章" disabled={gap <= 1}>－</button>
+            </div>
+          </PrefRow>
+        </PrefCard>
+        <div className="pref-note">
+          <ShieldCheck size={14} />
+          所有作品数据保存在本地 SQLite（见「数据与备份」）；本页偏好仅写入浏览器 localStorage，不随作品迁移。
+        </div>
+      </div>
+    </div>
+  </Scroll>
+}
+
+/** 编辑器设置：字号 / 主题 / 自动保存间隔 / 专注目标。 */
+function EditorSection() {
+  const { theme, toggleTheme } = useTheme()
+  const [font, setFont] = useState(readEditorFont)
+  const [autosave, setAutosave] = useState(readAutosaveMs)
+  const [goal, setGoal] = useState(readFocusGoal)
+  const changeFont = (size: number) => { setFont(size); writeEditorFont(size) }
+  const changeAutosave = (ms: number) => { setAutosave(ms); writeAutosaveMs(ms) }
+  const changeGoal = (delta: number) => { const next = Math.max(100, goal + delta); setGoal(next); writeFocusGoal(next) }
+  return <Scroll>
+    <div style={{ maxWidth: 'min(720px, 100%)', margin: '0 auto' }}>
+      <PageHeader eyebrow="写作体验" title="编辑器设置" desc="调整正文显示与保存节奏，立即对写作页生效。" />
+      <div className="pref-list">
+        <PrefCard title="写作偏好" desc="已打开的写作页下次进入时刷新为最新设置。">
+          <PrefRow label="正文字号" hint="小 14 · 标准 15 · 大 17">
+            <div className="pref-segments" role="group" aria-label="正文字号">
+              {EDITOR_FONT_STEPS.map(size => (
+                <button key={size} className={font === size ? 'active' : ''} onClick={() => changeFont(size)}>
+                  {size === 14 ? '小' : size === 15 ? '标准' : '大'}
+                </button>
+              ))}
+            </div>
+          </PrefRow>
+          <PrefRow label="界面主题" hint={`当前${theme === 'dark' ? '夜间' : '白天'}，与标题栏切换按钮同步`}>
+            <button className={'toggle ' + (theme === 'dark' ? 'on' : '')} onClick={toggleTheme} aria-label="切换昼夜主题"><i /></button>
+          </PrefRow>
+          <PrefRow label="自动保存间隔" hint="停稿后多久落盘；切换章节或关窗时立即补存">
+            <div className="pref-segments" role="group" aria-label="自动保存间隔">
+              {AUTOSAVE_MS_STEPS.map(ms => (
+                <button key={ms} className={autosave === ms ? 'active' : ''} onClick={() => changeAutosave(ms)}>
+                  {ms / 1000} 秒
+                </button>
+              ))}
+            </div>
+          </PrefRow>
+          <PrefRow label="专注目标" hint="进入专注模式时的默认本次字数目标">
+            <div className="pref-stepper" role="group" aria-label="专注目标字数">
+              <button onClick={() => changeGoal(-500)} aria-label="减少 500 字" disabled={goal <= 100}>－</button>
+              <span className="pref-value">{goal}<small>字</small></span>
+              <button onClick={() => changeGoal(500)} aria-label="增加 500 字">＋</button>
+            </div>
+          </PrefRow>
+        </PrefCard>
+      </div>
+    </div>
+  </Scroll>
 }
 
 function AISection({ onSaved }: { onSaved: () => Promise<void> }) {
@@ -60,43 +158,47 @@ function AISection({ onSaved }: { onSaved: () => Promise<void> }) {
   }
   const remove = async (cfg: AIConfig) => { const ok = await confirmDialog({ title: '删除模型配置', message: `删除「${cfg.name}」的配置？已保存的 API Key 将一并清除。`, danger: true, confirmLabel: '删除' }); if (ok) { await workspaceApi.deleteAIConfig(cfg.id); await load() } }
   return <Scroll>
-    <PageHeader eyebrow="AI 调度" title="AI 模型" desc="配置 OpenAI 兼容的模型（GPT / DeepSeek / Claude 兼容端点）。未配置时将自动使用本地离线生成。" actions={<>
-      <Button onClick={async () => { try { const r = await workspaceApi.exportAIEnv(); if (r.ok) toast.success(`已同步到 ${r.path}`); else toast.error(r.detail) } catch (e) { toast.error('同步失败：' + (e instanceof Error ? e.message : '')) } }}><Download size={14} />同步到 .env</Button>
-      <Button onClick={() => setRagFormOpen(true)}><Database size={14} />{rag?.enabled ? 'RAG 模型' : '配置 RAG 模型'}</Button>
-      <Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />添加写作模型</Button>
-    </>} />
-    <div style={{ maxWidth: 720, margin: '0 auto 18px', padding: '12px 14px', border: '1px solid #e2dfd6', borderRadius: 9, background: '#fffefa', fontSize: 11, color: '#6b6f6b' }}>
-      <ShieldCheck size={14} style={{ verticalAlign: -2, marginRight: 6, color: '#6e7e74' }} />
-      {meta?.offline_fallback && '已启用离线兜底：未配置可用密钥时，AI 面板仍可生成示例草稿。'} API Key 加密存储于本地，永不下发至前端。点「同步到 .env」可把当前配置（含 Key 明文）写入项目根目录的 .env 文件，方便备份与查看。
-    </div>
-    {rag && (
-      <div className="rag-status-card">
-        <div>
-          <strong>检索增强（RAG）{rag.enabled ? '已启用' : '未启用'}</strong>
-          <small>
-            {rag.enabled
-              ? `模型 ${rag.embed_model} · 章节 ${rag.chunks.chapter} 块 / 资料 ${rag.chunks.library} 块${rag.chunks.pending ? ` · 待向量化 ${rag.chunks.pending}` : ''}`
-              : '点右上「配置 RAG 模型」填入 Embedding 服务（可与写作模型不同厂商），自动启用前文检索 / 资料库 / 语义搜索。'}
-          </small>
-          {rag.stale_model_chunks > 0 && <small className="rag-warn">检测到 {rag.stale_model_chunks} 块使用旧模型向量，请重建索引。</small>}
-        </div>
-        <div className="rag-status-actions">
-          <Button onClick={() => setRagFormOpen(true)}>{rag.enabled ? '编辑' : '去配置'}</Button>
-          <Button onClick={rebuild} disabled={rebuilding || !rag.enabled}>{rebuilding ? '重建中…' : '重建索引'}</Button>
-        </div>
+    <div style={{ maxWidth: 'min(720px, 100%)', margin: '0 auto' }}>
+      <PageHeader eyebrow="AI 调度" title="AI 模型" desc="配置 OpenAI 兼容的模型（GPT / DeepSeek / Claude 兼容端点）。未配置时将自动使用本地离线生成。" actions={<>
+        <Button onClick={async () => { try { const r = await workspaceApi.exportAIEnv(); if (r.ok) toast.success(`已同步到 ${r.path}`); else toast.error(r.detail) } catch (e) { toast.error('同步失败：' + (e instanceof Error ? e.message : '')) } }}><Download size={14} />同步到 .env</Button>
+        <Button onClick={() => setRagFormOpen(true)}><Database size={14} />{rag?.enabled ? 'RAG 模型' : '配置 RAG 模型'}</Button>
+        <Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />添加写作模型</Button>
+      </>} />
+      <div className="pref-list">
+      <div className="pref-note" style={{ marginBottom: 0 }}>
+        <ShieldCheck size={14} />
+        {meta?.offline_fallback && '已启用离线兜底：未配置可用密钥时，AI 面板仍可生成示例草稿。'} API Key 加密存储于本地，永不下发至前端。点「同步到 .env」可把当前配置（含 Key 明文）写入项目根目录的 .env 文件，方便备份与查看。
       </div>
-    )}
-    {ragFormOpen && <RagConfigForm onClose={() => setRagFormOpen(false)} onSaved={async () => { setRagFormOpen(false); await loadRag() }} />}
-    <div style={{ maxWidth: 720, margin: '0 auto' }} className="settings-config-list">
-      {loading && <p style={{ color: '#999', fontSize: 11 }}>读取配置…</p>}
-      {!loading && configs.length === 0 && <div className="empty-state"><span><Bot size={22} /></span><h3>还没有配置模型</h3><p>添加一个 OpenAI 兼容模型以启用真实 AI 续写；在此之前将使用离线生成。</p><Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />添加模型</Button></div>}
-      {configs.map(cfg => <div className={'config-card' + (cfg.is_active ? ' active' : '')} key={cfg.id}>
-        <span className="cfg-icon"><Bot size={18} /></span>
-        <div className="cfg-body"><strong>{cfg.name} · {cfg.model}</strong><small>{cfg.base_url || '无 base_url'} · temperature {cfg.temperature} · max {cfg.max_tokens}</small></div>
-        {cfg.is_active ? <span className="badge">当前</span> : <Button onClick={() => void setActive(cfg)}>设为当前</Button>}
-        <Button onClick={() => setEditing(cfg)}><PenLine size={13} />编辑</Button>
-        <button className="icon-button" onClick={() => void remove(cfg)}><Trash2 size={15} /></button>
-      </div>)}
+      {rag && (
+        <div className="rag-status-card">
+          <div>
+            <strong>检索增强（RAG）{rag.enabled ? '已启用' : '未启用'}</strong>
+            <small>
+              {rag.enabled
+                ? `模型 ${rag.embed_model} · 章节 ${rag.chunks.chapter} 块 / 资料 ${rag.chunks.library} 块${rag.chunks.pending ? ` · 待向量化 ${rag.chunks.pending}` : ''}`
+                : '点右上「配置 RAG 模型」填入 Embedding 服务（可与写作模型不同厂商），自动启用前文检索 / 资料库 / 语义搜索。'}
+            </small>
+            {rag.stale_model_chunks > 0 && <small className="rag-warn">检测到 {rag.stale_model_chunks} 块使用旧模型向量，请重建索引。</small>}
+          </div>
+          <div className="rag-status-actions">
+            <Button onClick={() => setRagFormOpen(true)}>{rag.enabled ? '编辑' : '去配置'}</Button>
+            <Button onClick={rebuild} disabled={rebuilding || !rag.enabled}>{rebuilding ? '重建中…' : '重建索引'}</Button>
+          </div>
+        </div>
+      )}
+      {ragFormOpen && <RagConfigForm onClose={() => setRagFormOpen(false)} onSaved={async () => { setRagFormOpen(false); await loadRag() }} />}
+      <div className="settings-config-list">
+        {loading && <p style={{ color: '#999', fontSize: 11 }}>读取配置…</p>}
+        {!loading && configs.length === 0 && <div className="empty-state"><span><Bot size={22} /></span><h3>还没有配置模型</h3><p>添加一个 OpenAI 兼容模型以启用真实 AI 续写；在此之前将使用离线生成。</p><Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />添加模型</Button></div>}
+        {configs.map(cfg => <div className={'config-card' + (cfg.is_active ? ' active' : '')} key={cfg.id}>
+          <span className="cfg-icon"><Bot size={18} /></span>
+          <div className="cfg-body"><strong>{cfg.name} · {cfg.model}</strong><small>{cfg.base_url || '无 base_url'} · temperature {cfg.temperature} · max {cfg.max_tokens}</small></div>
+          {cfg.is_active ? <span className="badge">当前</span> : <Button onClick={() => void setActive(cfg)}>设为当前</Button>}
+          <Button onClick={() => setEditing(cfg)}><PenLine size={13} />编辑</Button>
+          <button className="icon-button" onClick={() => void remove(cfg)}><Trash2 size={15} /></button>
+        </div>)}
+      </div>
+      </div>
     </div>
     {creating && <AIConfigForm onClose={() => setCreating(false)} onSaved={async () => { setCreating(false); await load() }} />}
     {editing && <AIConfigForm initial={editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await load() }} />}
@@ -303,7 +405,7 @@ function AIConfigForm({ initial, onClose, onSaved }: { initial?: AIConfig; onClo
       <Field label="API Key"><input className={inputCls} type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={keyPlaceholder} /></Field>
       <div className="ai-fetch-row"><Button onClick={fetchModels} disabled={testing || busy}><Bot size={13} />{testing ? '获取中…' : '测试并获取模型列表'}</Button><span>{testResult || '连接平台后自动拉取可用模型与上下文窗口'}</span></div>
       <div className="form-row"><Field label="Temperature"><input className={inputCls} type="number" step="0.05" value={temperature} onChange={e => setTemperature(e.target.value)} /></Field><Field label="Max tokens"><input className={inputCls} type="number" value={maxTokens} onChange={e => setMaxTokens(e.target.value)} /></Field></div>
-      <div className="setting-row" style={{ paddingLeft: 0, paddingRight: 0 }}><span><strong>设为当前使用模型</strong><small>同一时刻仅一个模型生效</small></span><button className={'toggle ' + (isActive ? 'on' : '')} onClick={() => setIsActive(v => !v)}><i /></button></div>
+      <PrefRow label="设为当前使用模型" hint="同一时刻仅一个模型生效"><button className={'toggle ' + (isActive ? 'on' : '')} onClick={() => setIsActive(v => !v)} aria-label="设为当前使用模型"><i /></button></PrefRow>
     </div>
   </Modal>
 }
@@ -311,7 +413,7 @@ function AIConfigForm({ initial, onClose, onSaved }: { initial?: AIConfig; onClo
 function ExportSection({ workspace }: { workspace: Workspace }) {
   const { novel } = workspace
   const [busy, setBusy] = useState('')
-  const download = async (format: 'txt' | 'markdown' | 'docx') => {
+  const download = async (format: 'txt' | 'markdown' | 'docx' | 'epub') => {
     setBusy(format)
     try {
       const blob = await workspaceApi.exportNovel(novel.id, format)
@@ -322,11 +424,25 @@ function ExportSection({ workspace }: { workspace: Workspace }) {
       URL.revokeObjectURL(url)
     } catch { /* ignore */ } finally { setBusy('') }
   }
-  return <Scroll><PageHeader eyebrow="导出" title="导出作品" desc={`将《${novel.title}》导出为本地文件，共 ${workspace.chapters.length} 章。`} />
-    <div style={{ maxWidth: 720, margin: '0 auto', display: 'grid', gap: 12 }}>
-      <div className="config-card"><span className="cfg-icon"><FileText size={18} /></span><div className="cfg-body"><strong>Word 文档 DOCX</strong><small>带章节标题层级，适合投稿与排版（#5 新增）</small></div><Button kind="primary" onClick={() => download('docx')} disabled={!!busy}>{busy === 'docx' ? '导出中…' : '导出 DOCX'}</Button></div>
-      <div className="config-card"><span className="cfg-icon"><FileText size={18} /></span><div className="cfg-body"><strong>纯文本 TXT</strong><small>适合投稿、备份与外部排版工具</small></div><Button onClick={() => download('txt')} disabled={!!busy}>{busy === 'txt' ? '导出中…' : '导出 TXT'}</Button></div>
-      <div className="config-card"><span className="cfg-icon"><FileText size={18} /></span><div className="cfg-body"><strong>Markdown</strong><small>章节带标题层级，适合发布与版本管理</small></div><Button onClick={() => download('markdown')} disabled={!!busy}>{busy === 'markdown' ? '导出中…' : '导出 Markdown'}</Button></div>
+  return <Scroll>
+    <div style={{ maxWidth: 'min(720px, 100%)', margin: '0 auto' }}>
+      <PageHeader eyebrow="导出" title="导出作品" desc={`将《${novel.title}》导出为本地文件，共 ${workspace.chapters.length} 章。`} />
+      <div className="pref-list">
+        <PrefCard title="导出格式" desc="导出会包含全部章节正文与章节标题。">
+          <PrefRow label="EPUB 电子书" hint="带目录与封面页，适合阅读器与手机阅读">
+            <Button kind="primary" onClick={() => download('epub')} disabled={!!busy}>{busy === 'epub' ? '导出中…' : '导出'}</Button>
+          </PrefRow>
+          <PrefRow label="Word 文档 DOCX" hint="带章节标题层级，适合投稿与排版">
+            <Button onClick={() => download('docx')} disabled={!!busy}>{busy === 'docx' ? '导出中…' : '导出'}</Button>
+          </PrefRow>
+          <PrefRow label="纯文本 TXT" hint="适合投稿、备份与外部排版工具">
+            <Button onClick={() => download('txt')} disabled={!!busy}>{busy === 'txt' ? '导出中…' : '导出'}</Button>
+          </PrefRow>
+          <PrefRow label="Markdown" hint="章节带标题层级，适合发布与版本管理">
+            <Button onClick={() => download('markdown')} disabled={!!busy}>{busy === 'markdown' ? '导出中…' : '导出'}</Button>
+          </PrefRow>
+        </PrefCard>
+      </div>
     </div>
   </Scroll>
 }
@@ -413,62 +529,135 @@ function DataSection({ reload }: { reload: () => Promise<void> }) {
 
   const sizeLabel = info ? (info.db_size_kb >= 1024 ? `${(info.db_size_kb / 1024).toFixed(1)} MB` : `${info.db_size_kb} KB`) : '—'
   return <Scroll>
-    <PageHeader eyebrow="本地存储" title="数据与备份" desc="所有创作数据都保存在本地 SQLite，无需联网。可自定义保存位置。" />
-    <div style={{ maxWidth: 720, margin: '0 auto', display: 'grid', gap: 12 }}>
+    <div style={{ maxWidth: 'min(720px, 100%)', margin: '0 auto' }}>
+      <PageHeader eyebrow="本地存储" title="数据与备份" desc="所有创作数据都保存在本地 SQLite，无需联网。可自定义保存位置。" />
+      <div className="pref-list">
       {error && <div style={{ color: '#a3483f', fontSize: 11 }}>{error}</div>}
-      <div className="setting-block">
-        <header><h2>数据保存位置</h2><p>默认保存在程序目录下的「墨境数据」文件夹，可改为任意位置（含数据会被一并迁移过去）。</p></header>
-        <section>
-          <div className="database-card">
-            <span><Database size={20} /></span>
-            <div>
-              <strong>{info?.db_file ?? 'mojing.db'} · {sizeLabel}</strong>
-              <p style={{ wordBreak: 'break-all' }}>{info?.data_dir ?? '读取中…'}</p>
-              <small><Check size={11} />{info?.is_default ? '当前为默认位置' : '自定义位置'}{info && !info.is_default && ' · 可恢复默认'}</small>
-            </div>
-            <Button onClick={() => setEditing(true)}><HardDrive size={13} />选择保存路径</Button>
-            {info && !info.is_default && <Button kind="ghost" onClick={reset} disabled={busy}>恢复默认</Button>}
+      <PrefCard title="数据保存位置" desc="默认保存在程序目录下的「墨境数据」文件夹，可改为任意位置（含数据会被一并迁移过去）。">
+        <div className="database-card">
+          <span><Database size={20} /></span>
+          <div>
+            <strong>{info?.db_file ?? 'mojing.db'} · {sizeLabel}</strong>
+            <p style={{ wordBreak: 'break-all' }}>{info?.data_dir ?? '读取中…'}</p>
+            <small><Check size={11} />{info?.is_default ? '当前为默认位置' : '自定义位置'}{info && !info.is_default && ' · 可恢复默认'}</small>
           </div>
-        </section>
-      </div>
-      <div className="setting-block">
-        <header><h2>默认路径</h2><p>未自定义时，数据保存在这里。</p></header>
-        <section><div className="config-card"><span className="cfg-icon"><HardDrive size={18} /></span><div className="cfg-body"><strong>墨境数据（默认）</strong><small style={{ wordBreak: 'break-all' }}>{info?.default_dir ?? '—'}</small></div></div></section>
-      </div>
-      <div className="setting-block">
-        <header><h2>自动备份</h2><p>每次启动与每天首次写作自动创建滚动备份（保留最近 10 份），防止文件损坏或误删丢失全部作品。</p></header>
-        <section>
-          <div className="database-card">
-            <span><ShieldCheck size={20} /></span>
-            <div>
-              <strong>{backups.length > 0 ? `已有 ${backups.length} 份备份` : '暂无备份记录'}</strong>
-              <p>最近备份：{backups[0]?.modified ?? '—'}{backups[0] ? ` · ${backups[0].size_kb} KB` : ''}</p>
-              <small>{backupMsg || '点击右侧按钮立即创建一份备份。'}</small>
-            </div>
-            <Button onClick={doBackup} disabled={backupBusy}>{backupBusy ? '备份中…' : '立即备份'}</Button>
+          <Button onClick={() => setEditing(true)}><HardDrive size={13} />选择保存路径</Button>
+          {info && !info.is_default && <Button kind="ghost" onClick={reset} disabled={busy}>恢复默认</Button>}
+        </div>
+      </PrefCard>
+      <PrefCard title="默认路径" desc="未自定义时，数据保存在这里。">
+        <div className="config-card"><span className="cfg-icon"><HardDrive size={18} /></span><div className="cfg-body"><strong>墨境数据（默认）</strong><small style={{ wordBreak: 'break-all' }}>{info?.default_dir ?? '—'}</small></div></div>
+      </PrefCard>
+      <PrefCard title="自动备份" desc="每次启动与每天首次写作自动创建滚动备份（保留最近 10 份），防止文件损坏或误删丢失全部作品。">
+        <div className="database-card">
+          <span><ShieldCheck size={20} /></span>
+          <div>
+            <strong>{backups.length > 0 ? `已有 ${backups.length} 份备份` : '暂无备份记录'}</strong>
+            <p>最近备份：{backups[0]?.modified ?? '—'}{backups[0] ? ` · ${backups[0].size_kb} KB` : ''}</p>
+            <small>{backupMsg || '点击右侧按钮立即创建一份备份。'}</small>
           </div>
-          {backups.length > 0 && <div className="backup-list">{backups.map(b => <div key={b.name}><span>{b.name}</span><small>{b.modified}</small><small>{b.size_kb} KB</small></div>)}</div>}
-        </section>
-      </div>
-      <div className="setting-block">
-        <header><h2>跨设备迁移</h2><p>把全部作品打包成一个 zip，拷到另一台电脑后用「导入备份」即可恢复（含所有章节、角色、地点、地图涂鸦、AI 配置）。换电脑、备份到网盘都用这个。</p></header>
-        <section>
-          <div className="database-card">
-            <span><Upload size={20} /></span>
-            <div>
-              <strong>导出 / 导入完整备份</strong>
-              <p>{migrateMsg || '导出会先把数据库 WAL 落盘，确保快照自洽；导入会切到新数据目录，原数据保留可回退。'}</p>
-            </div>
-            <Button onClick={doExport} disabled={migrateBusy}>{migrateBusy ? '处理中…' : '导出备份'}</Button>
-            <Button onClick={() => fileInputRef.current?.click()} disabled={migrateBusy}><Download size={13} />导入备份</Button>
-            <input ref={fileInputRef} type="file" accept=".zip,application/zip" hidden
-              onChange={e => { const f = e.target.files?.[0]; if (f) void doImport(f) }} />
+          <Button onClick={doBackup} disabled={backupBusy}>{backupBusy ? '备份中…' : '立即备份'}</Button>
+        </div>
+        {backups.length > 0 && <div className="backup-list">{backups.map(b => <div key={b.name}><span>{b.name}</span><small>{b.modified}</small><small>{b.size_kb} KB</small></div>)}</div>}
+      </PrefCard>
+      <PrefCard title="跨设备迁移" desc="把全部作品打包成一个 zip，拷到另一台电脑后用「导入备份」即可恢复（含所有章节、角色、地点、地图涂鸦、AI 配置）。">
+        <div className="database-card">
+          <span><Upload size={20} /></span>
+          <div>
+            <strong>导出 / 导入完整备份</strong>
+            <p>{migrateMsg || '导出会先把数据库 WAL 落盘，确保快照自洽；导入会切到新数据目录，原数据保留可回退。'}</p>
           </div>
-        </section>
+          <Button onClick={doExport} disabled={migrateBusy}>{migrateBusy ? '处理中…' : '导出备份'}</Button>
+          <Button onClick={() => fileInputRef.current?.click()} disabled={migrateBusy}><Download size={13} />导入备份</Button>
+          <input ref={fileInputRef} type="file" accept=".zip,application/zip" hidden
+            onChange={e => { const f = e.target.files?.[0]; if (f) void doImport(f) }} />
+        </div>
+      </PrefCard>
+      <WebDavSection />
       </div>
     </div>
     {editing && info && <PathForm defaultPath={info.data_dir} hasNativePicker={hasNativePicker} onClose={() => setEditing(false)} onApply={apply} busy={busy} />}
   </Scroll>
+}
+
+/** F12 WebDAV 自动备份：配置坚果云/NAS 等 WebDAV 目标，每日备份后自动上传，
+ *  远端保留 keep 份轮换。密码加密落库，响应只回 has_password。 */
+function WebDavSection() {
+  const [cfg, setCfg] = useState<{ configured: boolean; url: string; username: string; has_password: boolean; keep: number } | null>(null)
+  const [url, setUrl] = useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [keep, setKeep] = useState(5)
+  const [msg, setMsg] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState('')
+
+  const load = useCallback(async () => {
+    try {
+      const c = await workspaceApi.getWebdavConfig()
+      setCfg(c); setUrl(c.url); setUsername(c.username); setKeep(c.keep)
+    } catch { /* 静默：未配置 */ }
+  }, [])
+  useEffect(() => { void load() }, [load])
+
+  const save = async () => {
+    setBusy('save'); setError(''); setMsg('')
+    try {
+      const saved = await workspaceApi.saveWebdavConfig({
+        url: url.trim(), username: username.trim(),
+        password: password || undefined, // 空 = 保留已存密码；清空走下方说明
+        keep,
+      })
+      setCfg(saved); setPassword('')
+      setMsg('配置已保存。建议点「测试连接」确认可用。')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '保存失败')
+    } finally { setBusy('') }
+  }
+
+  const test = async () => {
+    setBusy('test'); setError(''); setMsg('')
+    try {
+      const r = await workspaceApi.testWebdavConfig()
+      if (r.ok) setMsg(r.detail)
+      else setError(r.detail)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '测试失败')
+    } finally { setBusy('') }
+  }
+
+  const upload = async () => {
+    setBusy('upload'); setError(''); setMsg('')
+    try {
+      const r = await workspaceApi.uploadWebdavBackup()
+      if (r.ok) setMsg(`已上传 ${r.name}（${r.size_kb} KB），远端按保留 ${keep} 份轮换。`)
+      else setError(r.detail)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '上传失败')
+    } finally { setBusy('') }
+  }
+
+  return <PrefCard title="WebDAV 自动备份" desc="配置 WebDAV（坚果云、NAS 等）后，每天首次写作的自动备份会同步上传到云端；远端只保留最近几份，自动轮换。凭据加密保存在本地。">
+    <div className="setting-pad">
+      <div className="form-row">
+        <Field label="WebDAV 地址"><input className={inputCls} value={url} onChange={e => setUrl(e.target.value)} placeholder="https://dav.jianguoyun.com/dav/墨境备份/" /></Field>
+        <Field label="用户名"><input className={inputCls} value={username} onChange={e => setUsername(e.target.value)} /></Field>
+      </div>
+      <div className="form-row">
+        <Field label={cfg?.has_password ? '密码（已保存，留空保持不变）' : '密码 / 应用密码'}>
+          <input className={inputCls} type="password" value={password} onChange={e => setPassword(e.target.value)} />
+        </Field>
+        <Field label="远端保留份数"><input className={inputCls} type="number" min={1} max={50} value={keep} onChange={e => setKeep(Number(e.target.value) || 5)} /></Field>
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
+        <Button kind="primary" onClick={() => void save()} disabled={!!busy}>{busy === 'save' ? '保存中…' : '保存配置'}</Button>
+        <Button onClick={() => void test()} disabled={!!busy || !cfg?.configured}>{busy === 'test' ? '测试中…' : '测试连接'}</Button>
+        <Button onClick={() => void upload()} disabled={!!busy || !cfg?.configured}>{busy === 'upload' ? '备份上传中…' : '立即备份并上传'}</Button>
+        {msg && <small style={{ color: '#5c7a52' }}>{msg}</small>}
+        {error && <small style={{ color: '#a3483f' }}>{error}</small>}
+      </div>
+    </div>
+  </PrefCard>
 }
 
 function PathForm({ defaultPath, hasNativePicker, onClose, onApply, busy }: { defaultPath: string; hasNativePicker: boolean; onClose: () => void; onApply: (dir: string) => void; busy: boolean }) {
@@ -490,10 +679,15 @@ function PathForm({ defaultPath, hasNativePicker, onClose, onApply, busy }: { de
 }
 
 function AboutSection() {
-  return <Scroll><PageHeader eyebrow="关于" title="墨境 Mojing" desc="本地优先的 AI 小说创作工作台。" />
-    <div style={{ maxWidth: 720, margin: '0 auto', display: 'grid', gap: 12 }}>
-      <div className="config-card"><span className="cfg-icon"><Feather size={18} /></span><div className="cfg-body"><strong>墨境 0.3.0</strong><small>Electron + FastAPI + React · SQLite 本地存储</small></div></div>
-      <div className="config-card"><span className="cfg-icon"><BrainCircuit size={18} /></span><div className="cfg-body"><strong>核心功能</strong><small>多作品管理 · 章节版本 · 角色 / 地点 / 世界观 / 伏笔 · AI 续写（多模型）</small></div></div>
+  return <Scroll>
+    <div style={{ maxWidth: 'min(720px, 100%)', margin: '0 auto' }}>
+      <PageHeader eyebrow="关于" title="墨境 Mojing" desc="本地优先的 AI 小说创作工作台。" />
+      <div className="pref-list">
+        <PrefCard title="版本信息" desc="墨境 0.3.0 · Electron + FastAPI + React · SQLite 本地存储。">
+          <PrefRow label="核心功能" hint="多作品管理 · 章节版本 · 角色 / 地点 / 世界观 / 伏笔 · 时间线 · 地图涂鸦" />
+          <PrefRow label="AI 能力" hint="多模型切换 · 前文检索（RAG）· 续写 / 润色 / 多角色对话 · 离线兜底" />
+        </PrefCard>
+      </div>
     </div>
   </Scroll>
 }

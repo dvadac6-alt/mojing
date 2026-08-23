@@ -266,6 +266,10 @@ _INDEXES = (
     ("ix_map_strokes_map_seq", "map_strokes", "map_id, seq"),
     ("ix_map_strokes_map_color", "map_strokes", "map_id, color"),
     ("ix_ai_usage_novel_created", "ai_usage", "novel_id, created_at"),
+    ("ix_character_appearances_novel", "character_appearances", "novel_id"),
+    ("ix_character_appearances_chapter", "character_appearances", "chapter_id"),
+    ("ix_ideas_novel_status", "ideas", "novel_id, status"),
+    ("ix_timeline_events_novel", "timeline_events", "novel_id"),
 )
 
 
@@ -335,6 +339,15 @@ def _migrate_legacy_columns() -> None:
     """In-place column additions for tables created before a schema change."""
     additions = {
         "chapter_versions": [("label", "VARCHAR(40) DEFAULT 'auto' NOT NULL")],
+        "chapters": [
+            # F1 章节摘要链
+            ("summary", "TEXT DEFAULT '' NOT NULL"),
+            ("summary_updated_at", "DATETIME"),
+        ],
+        "novels": [
+            # F11 文风画像
+            ("style_profile", "JSON"),
+        ],
         "ai_config": [
             ("context_length", "INTEGER"),
             ("embed_base_url", "VARCHAR(255) DEFAULT '' NOT NULL"),

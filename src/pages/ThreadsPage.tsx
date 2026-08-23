@@ -49,7 +49,7 @@ export function ThreadsPage({ workspace, reload }: { workspace: Workspace; reloa
   }
 
   if (loading) return <div className="page-loading-fallback">加载中…</div>
-  if (threads.length === 0) return <EmptyStateWrap icon={BrainCircuit} title="还没有伏笔" desc="标记一条伏笔，开始追踪它从埋设到收束的全过程。" action={() => setCreating(true)} />
+  if (threads.length === 0) return <><EmptyStateWrap icon={BrainCircuit} title="还没有伏笔" desc="标记一条伏笔，开始追踪它从埋设到收束的全过程。" action={() => setCreating(true)} />{creating && <ThreadForm novelId={novelId} chapters={chapters} characters={characters} onClose={() => setCreating(false)} onSaved={saved => { setCreating(false); upsert(saved) }} />}</>
 
   return <div className="threads-page"><div className="threads-top">
     <PageHeader eyebrow="情节追踪" title="伏笔看板" desc="从埋设到收束，持续跟踪每一条线索。" actions={<><Button>关系图</Button><Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />新建伏笔</Button></>} />

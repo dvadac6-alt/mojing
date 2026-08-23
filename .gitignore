@@ -1,0 +1,25 @@
+# 子项目（独立 git 仓库）
+new/
+
+# 本地文档（不上传）
+local-docs/
+
+# AI 工具本地状态（不可上传）
+.claude/
+.zcode/
+.mimosa/
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 临时文件
+*.log
+*.tmp

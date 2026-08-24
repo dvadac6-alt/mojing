@@ -45,6 +45,8 @@ class Novel(Base):
     status: Mapped[NovelStatus] = mapped_column(Enum(NovelStatus), default=NovelStatus.WRITING, nullable=False)
     # F11 文风画像：analyze_style 的结果 JSON；存在时续写 prompt 注入文风约束。
     style_profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # 封面图文件名（DATA_DIR/novel_covers/ 下；空 = 未设置，卡片用色调占位）。
+    cover_image: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

@@ -9,6 +9,8 @@ export type Novel = {
   status: 'planning' | 'writing' | 'completed'
   /** F11 文风画像（服务端统计，客户端只读）。 */
   style_profile: Record<string, number> | null
+  /** 封面图文件名（空 = 未设置）；图片本体经 getNovelCover 取 blob。 */
+  cover_image: string
   total_words: number
   chapter_count: number
   created_at: string
@@ -469,6 +471,27 @@ const api = {
   updateNovel: (id: string, data: Partial<Novel>) =>
     request<Novel>(`/novels/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteNovel: (id: string) => request<void>(`/novels/${id}`, { method: 'DELETE' }),
+  // cover image — raw blob paths (not request<T>) since payloads aren't JSON.
+  // GET needs auth, so callers fetch the blob and turn it into an object URL.
+  uploadNovelCover: async (novelId: string, file: Blob, contentType: string): Promise<Novel> => {
+    const res = await fetch(`${API_BASE}/novels/${novelId}/cover`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': contentType },
+      body: file,
+    })
+    if (!res.ok) {
+      const detail = await res.json().catch(() => null)
+      throw new Error(detail?.detail ?? `封面上传失败（${res.status}）`)
+    }
+    return res.json()
+  },
+  getNovelCover: async (novelId: string): Promise<Blob> => {
+    const res = await fetch(`${API_BASE}/novels/${novelId}/cover`, { headers: authHeaders() })
+    if (!res.ok) throw new Error('No cover')
+    return res.blob()
+  },
+  deleteNovelCover: (novelId: string) =>
+    request<Novel>(`/novels/${novelId}/cover`, { method: 'DELETE' }),
 
   // chapters（#2 懒加载：独立的章节元数据列表端点）
   listChapters: (novelId: string) => request<ChapterSummary[]>(`/novels/${novelId}/chapters`),

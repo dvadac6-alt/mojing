@@ -82,6 +82,12 @@ class OpenAICompatProvider:
                             "completion_tokens": usage.get("completion_tokens", 0),
                             "total_tokens": usage.get("total_tokens", 0),
                         }
-                    delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content")
+                    # 兼容端点常在流结束时发一个只带 usage、choices 为空列表的
+                    # 收尾块（或心跳块）。key 存在时 get 的默认值不生效，直接取
+                    # [0] 会 IndexError——这曾把整次生成在最后一块上炸掉。
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = (choices[0].get("delta") or {}).get("content")
                     if delta:
                         yield delta

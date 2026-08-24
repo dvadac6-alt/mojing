@@ -4,9 +4,10 @@ writing activity, and export."""
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, load_only
@@ -138,9 +139,112 @@ def update_novel(novel_id: str, payload: NovelUpdate, database: Session = Depend
 @router.delete("/novels/{novel_id}", status_code=204)
 def delete_novel(novel_id: str, database: Session = Depends(get_db)):
     novel = _get_novel(database, novel_id)
+    # 级联删除前先清掉封面文件，避免 DATA_DIR 里留孤儿图片。
+    if novel.cover_image:
+        old = _cover_path(novel.cover_image)
+        if old and old.exists():
+            try:
+                old.unlink()
+            except OSError:
+                pass
     database.delete(novel)
     database.execute(sa_delete(DocumentChunk).where(DocumentChunk.novel_id == novel_id))
     database.commit()
+
+
+# ---------------------------------------------------------------- cover image
+_COVER_TYPES = {
+    "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
+}
+_COVER_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def _cover_dir() -> Path:
+    from ..database import DATA_DIR
+    d = DATA_DIR / "novel_covers"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _cover_path(cover_image: str) -> Path | None:
+    """Resolve a stored cover filename to a path inside novel_covers/, or None
+    if it isn't a plain filename with an allowed extension. The value comes
+    from the DB — a malicious imported database could store '../../...' or an
+    absolute path, so never trust it for direct joining (path traversal)."""
+    filename = Path(cover_image)
+    if filename.name != cover_image or not filename.suffix:
+        return None
+    if filename.suffix.lower() not in _COVER_EXTS:
+        return None
+    path = _cover_dir() / filename
+    if path.parent.resolve() != _cover_dir().resolve():
+        return None
+    return path
+
+
+@router.get("/novels/{novel_id}/cover")
+def get_novel_cover(novel_id: str, database: Session = Depends(get_db)):
+    """Stream the novel's cover image. Returns 404 (no body) when unset so the
+    card falls back to the tone placeholder."""
+    novel = _get_novel(database, novel_id)
+    if not novel.cover_image:
+        raise HTTPException(status_code=404, detail="No cover image")
+    path = _cover_path(novel.cover_image)
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="Cover file missing")
+    return FileResponse(path)
+
+
+@router.post("/novels/{novel_id}/cover", response_model=NovelResponse)
+async def upload_novel_cover(novel_id: str, request: Request, database: Session = Depends(get_db)):
+    """Accept a raw image body (Content-Type image/*) and store it as the
+    novel's cover. The image lives under DATA_DIR/novel_covers/, keyed by
+    novel id so re-uploading replaces cleanly."""
+    novel = _get_novel(database, novel_id)
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    ext = _COVER_TYPES.get(content_type)
+    if not ext:
+        raise HTTPException(
+            status_code=415,
+            detail=f"仅支持图片格式：{', '.join(_COVER_TYPES.values())}",
+        )
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="未收到图片内容")
+    if len(body) > 12 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="图片过大（>12MB），请压缩后上传")
+    filename = f"{novel_id}{ext}"
+    (_cover_dir() / filename).write_bytes(body)
+    # Remove a previous file with a different extension (e.g. png → jpg swap).
+    # _cover_path refuses traversal-style names that could delete or touch
+    # files outside novel_covers/ (value may come from an imported DB).
+    if novel.cover_image and novel.cover_image != filename:
+        old = _cover_path(novel.cover_image)
+        if old and old.exists():
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    novel.cover_image = filename
+    database.commit()
+    database.refresh(novel)
+    return _novel(novel, database)
+
+
+@router.delete("/novels/{novel_id}/cover", response_model=NovelResponse)
+def delete_novel_cover(novel_id: str, database: Session = Depends(get_db)):
+    novel = _get_novel(database, novel_id)
+    if novel.cover_image:
+        old = _cover_path(novel.cover_image)
+        if old and old.exists():
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        novel.cover_image = ""
+        database.commit()
+        database.refresh(novel)
+    return _novel(novel, database)
 
 
 # ---------------------------------------------------------------- activity (writing heatmap)

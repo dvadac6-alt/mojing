@@ -88,18 +88,20 @@ DEMO_SETTINGS = [
 
 
 def seed_demo_workspace(database: Session) -> None:
-    novel = database.scalar(select(Novel).order_by(Novel.updated_at.desc()).limit(1))
-    if not novel:
-        novel = Novel(
-            title="雾隐长街",
-            description="一场持续三年的雨，和一桩无人敢提起的旧案。",
-            author="",
-            genre="悬疑",
-            target_words=200_000,
-            status=NovelStatus.WRITING,
-        )
-        database.add(novel)
-        database.flush()
+    # 演示数据只允许进入全新空库。此前实现是"挑最近更新的作品、没章节就灌入"，
+    # 导致用户新建空作品后重启后端时，整套演示内容被注入到用户作品里。
+    if database.scalar(select(Novel.id).limit(1)):
+        return
+    novel = Novel(
+        title="雾隐长街",
+        description="一场持续三年的雨，和一桩无人敢提起的旧案。",
+        author="",
+        genre="悬疑",
+        target_words=200_000,
+        status=NovelStatus.WRITING,
+    )
+    database.add(novel)
+    database.flush()
 
     chapters = list(database.scalars(
         select(Chapter).where(Chapter.novel_id == novel.id).order_by(Chapter.order)).all())

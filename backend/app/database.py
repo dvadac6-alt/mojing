@@ -347,6 +347,8 @@ def _migrate_legacy_columns() -> None:
         "novels": [
             # F11 文风画像
             ("style_profile", "JSON"),
+            # 作品封面图（DATA_DIR/novel_covers/ 下的文件名，空 = 未设置）
+            ("cover_image", "VARCHAR(255) DEFAULT '' NOT NULL"),
         ],
         "ai_config": [
             ("context_length", "INTEGER"),

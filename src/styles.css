@@ -322,6 +322,9 @@ kbd { font-family: inherit; font-size: var(--fs-xs); line-height: 1; border: 1px
 .cover.blue { background: linear-gradient(150deg,#66869a,#385c72); }
 .cover.clay { background: linear-gradient(150deg,#aa725f,#805342); }
 .cover span { writing-mode: vertical-rl; letter-spacing: .2em; font-size: var(--fs-lg); }
+.cover.has-img { position: relative; padding: 0; }
+.cover.has-img img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.card-tools { display: inline-flex; gap: 2px; }
 .project-body { min-width: 0; flex: 1; padding: 17px 15px; }
 .project-body > div:first-child, .project-body footer { display: flex; align-items: center; justify-content: space-between; }
 .project-body em { padding: 3px 7px; border-radius: var(--r-md); background: var(--bg-soft); color: var(--text-3); font-size: var(--fs-sm); font-style: normal; }
@@ -333,6 +336,15 @@ kbd { font-family: inherit; font-size: var(--fs-xs); line-height: 1; border: 1px
 .project-body footer { margin-top: 7px; color: var(--muted); font-size: var(--fs-sm); }
 .project-body footer strong { color: var(--text-2); }
 .backup-banner { max-width: 1500px; margin: 22px auto 0; padding: 14px 16px; display: flex; align-items: center; gap: 12px; border: 1px solid #d8ddd4; border-radius: var(--r-md); background: #f4f7f1; }
+
+/* 封面编辑（新建/编辑作品弹窗） */
+.cover-editor { display: flex; gap: 14px; align-items: stretch; }
+.cover-shot { width: 92px; height: 126px; flex: 0 0 92px; border-radius: var(--r-md); overflow: hidden; }
+.cover-shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cover-shot.empty { border: 1px dashed #c9c6bd; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--text-muted); background: var(--bg-soft); font-size: var(--fs-xs); }
+.cover-ops { display: flex; flex-direction: column; gap: 9px; justify-content: center; min-width: 0; }
+.cover-ops input[type="file"] { font-size: var(--fs-sm); color: var(--text-3); max-width: 260px; }
+.cover-ops .lib-muted { max-width: 260px; }
 .backup-banner > span { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--r-md); background: #e5ebdf; color: #697964; }
 .backup-banner div { flex: 1; }
 .backup-banner strong { font-size: var(--fs-md); }

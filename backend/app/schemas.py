@@ -41,6 +41,8 @@ class NovelResponse(OrmModel):
     status: str
     # F11 文风画像（服务端计算，客户端只读）
     style_profile: dict | None = None
+    # 封面图文件名（空 = 未设置）；图片本体走 GET /novels/{id}/cover
+    cover_image: str = ""
     total_words: int = 0
     chapter_count: int = 0
     created_at: datetime

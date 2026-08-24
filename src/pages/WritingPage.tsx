@@ -14,6 +14,7 @@ import {
 } from '../lib/constants'
 import { confirmDialog } from '../components/Confirm'
 import { toast } from '../components/Toast'
+import { indentParagraphs } from '../lib/textFormat'
 import { Button, EmptyState, Field, Modal, SearchBox } from '../components/ui'
 import { ModelSelect } from '../components/ModelSelect'
 import { TemplateChips, TemplateManagerModal, usePromptTemplates } from '../components/PromptTemplates'
@@ -312,8 +313,9 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
   // Stable accept handler for the memoized AI panels — the inline arrow it
   // replaced re-created on every keystroke/stream chunk and defeated their memo,
   // re-rendering the whole assistant sidebar on each token.
+  // 采纳即排版：AI 输出的段落是顶格的，插入时统一补上两个全角空格的段首缩进。
   const acceptText = useCallback(
-    (text: string) => setDraft(d => d.replace(/\s*$/, '') + '\n\n' + text),
+    (text: string) => setDraft(d => d.replace(/\s*$/, '') + '\n\n' + indentParagraphs(text)),
     [],
   )
   // 脏检查：两个 ===（长度短路）替代旧的整章全文签名拼接。

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Feather, FilePlus2, Import, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import { Feather, FilePlus2, ImagePlus, Import, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react'
 import { workspaceApi, type Novel } from '../workspaceApi'
 import { COVER_TONES, fmt } from '../lib/constants'
 import { Button, Field, FormFooter, Modal, PageHeader, Scroll, SearchBox } from '../components/ui'
@@ -12,6 +12,7 @@ export function ProjectsPage({ onOpen, currentId, novels, reloadNovels }: {
 }) {
   const [query, setQuery] = useState('')
   const [creating, setCreating] = useState(false)
+  const [editing, setEditing] = useState<Novel | null>(null)
   const [busyId, setBusyId] = useState('')
   // novels 由 App 持有（侧栏切换器同一份）；这里只跟踪"首次就绪"以区分
   // "0 部作品"与"仍在读取"。
@@ -38,11 +39,16 @@ export function ProjectsPage({ onOpen, currentId, novels, reloadNovels }: {
         const progress = n.target_words > 0 ? Math.min(100, Math.round((n.total_words / n.target_words) * 100)) : 0
         const tone = COVER_TONES[i % COVER_TONES.length]
         return <article className={'project-card' + (n.id === currentId ? ' current' : '')} key={n.id} onClick={() => onOpen(n.id)}>
-          <div className={'cover ' + tone}><Feather size={25} /><span>{n.title.slice(0, 2)}</span></div>
+          <NovelCover novel={n} tone={tone} />
           <div className="project-body">
-            <div><em>{n.genre || '未分类'}</em><button onClick={e => { e.stopPropagation(); void remove(n.id) }} disabled={busyId === n.id}><Trash2 size={15} /></button></div>
+            <div><em>{n.genre || '未分类'}</em>
+              <span className="card-tools">
+                <button title="作品设置（改名 / 简介 / 封面）" onClick={e => { e.stopPropagation(); setEditing(n) }}><Pencil size={15} /></button>
+                <button title="删除作品" onClick={e => { e.stopPropagation(); void remove(n.id) }} disabled={busyId === n.id}><Trash2 size={15} /></button>
+              </span>
+            </div>
             <h2>{n.title}</h2>
-            <p>{n.chapter_count} 章 · {fmt(n.total_words)} 字 · {n.author || '佚名'}</p>
+            <p title={n.description || undefined}>{n.chapter_count} 章 · {fmt(n.total_words)} 字 · {n.author || '佚名'}</p>
             <div className="progress"><i style={{ width: progress + '%' }} /></div>
             <footer><span>创作进度</span><strong>{progress}%</strong></footer>
           </div>
@@ -51,7 +57,26 @@ export function ProjectsPage({ onOpen, currentId, novels, reloadNovels }: {
     </div>
     <section className="backup-banner"><span><ShieldCheck size={22} /></span><div><strong>本地数据安全</strong><p>所有数据保存在本地 SQLite，无需联网。建议定期导出备份。</p></div><Button kind="ghost">管理备份</Button></section>
     {creating && <NovelForm onClose={() => setCreating(false)} onSaved={(id) => { setCreating(false); onOpen(id) }} />}
+    {editing && <NovelForm initial={editing} onClose={() => setEditing(null)}
+      onSaved={() => { setEditing(null); void reloadNovels() }} />}
   </Scroll>
+}
+
+/** 卡片封面：已上传则取 blob 显示，否则回退到色调 + 书名首字占位。
+ *  blob URL 在封面变化/卸载时回收，避免泄漏。 */
+function NovelCover({ novel, tone }: { novel: Novel; tone: string }) {
+  const [url, setUrl] = useState('')
+  useEffect(() => {
+    if (!novel.cover_image) { setUrl(''); return }
+    let created = ''
+    let cancelled = false
+    workspaceApi.getNovelCover(novel.id)
+      .then(blob => { if (!cancelled) { created = URL.createObjectURL(blob); setUrl(created) } })
+      .catch(() => { /* 404 或文件缺失 → 保持占位 */ })
+    return () => { cancelled = true; if (created) URL.revokeObjectURL(created) }
+  }, [novel.id, novel.cover_image])
+  if (url) return <div className={'cover has-img ' + tone}><img src={url} alt={novel.title} /></div>
+  return <div className={'cover ' + tone}><Feather size={25} /><span>{novel.title.slice(0, 2)}</span></div>
 }
 
 function NovelForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: (id: string) => void; initial?: Novel }) {
@@ -60,15 +85,54 @@ function NovelForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved
   const [author, setAuthor] = useState(initial?.author ?? '')
   const [target, setTarget] = useState(String(initial?.target_words ?? 200000))
   const [desc, setDesc] = useState(initial?.description ?? '')
+  // 封面：coverFile = 本次新选的文件（提交时上传）；coverRemoved = 要求清除现有封面。
+  const [coverFile, setCoverFile] = useState<File | null>(null)
+  const [coverRemoved, setCoverRemoved] = useState(false)
+  const [fileUrl, setFileUrl] = useState('')
+  const [savedUrl, setSavedUrl] = useState('')
   const { busy, error, run } = useAsyncAction()
+
+  useEffect(() => {
+    if (!coverFile) { setFileUrl(''); return }
+    const url = URL.createObjectURL(coverFile)
+    setFileUrl(url)
+    return () => URL.revokeObjectURL(url)
+  }, [coverFile])
+  // 已存封面的预览（编辑模式且未被清除时）。
+  useEffect(() => {
+    if (!initial?.cover_image || coverRemoved) { setSavedUrl(''); return }
+    let created = ''
+    let cancelled = false
+    workspaceApi.getNovelCover(initial.id)
+      .then(blob => { if (!cancelled) { created = URL.createObjectURL(blob); setSavedUrl(created) } })
+      .catch(() => { /* 文件缺失 → 显示占位 */ })
+    return () => { cancelled = true; if (created) URL.revokeObjectURL(created) }
+  }, [initial, coverRemoved])
+
+  const preview = fileUrl || savedUrl
+
   const submit = () => run(async () => {
     const data = { title: title.trim() || '未命名作品', genre, author, description: desc, target_words: Number(target) || 200000, status: 'writing' as const }
     const n = initial ? await workspaceApi.updateNovel(initial.id, data) : await workspaceApi.createNovel(data)
+    // 封面走独立端点（按 novel id 落盘），新建模式也要等 id 生成后再传。
+    if (coverFile) await workspaceApi.uploadNovelCover(n.id, coverFile, coverFile.type || 'image/png')
+    else if (initial && coverRemoved) await workspaceApi.deleteNovelCover(n.id)
     onSaved(n.id)
   })
   return <Modal eyebrow={initial ? '编辑作品' : '新建作品'} title={initial ? '作品设置' : '创建一部新小说'} icon={FilePlus2} onClose={onClose}
     footer={<FormFooter error={error} busy={busy} onClose={onClose} onSubmit={submit} note="作品信息保存在本地数据库" submitLabel={initial ? '保存修改' : '创建并进入'} />}>
     <div className="form-body">
+      <Field label="封面"><div className="cover-editor">
+        {preview
+          ? <div className="cover-shot"><img src={preview} alt="封面预览" /></div>
+          : <div className="cover-shot empty"><ImagePlus size={18} /><span>未设置封面</span></div>}
+        <div className="cover-ops">
+          <input type="file" accept="image/png,image/jpeg,image/webp,image/gif"
+            onChange={e => { const f = e.target.files?.[0]; if (f) { setCoverFile(f); setCoverRemoved(false) } e.target.value = '' }} />
+          {(preview || initial?.cover_image) && <Button onClick={() => { setCoverFile(null); setCoverRemoved(true) }}><Trash2 size={14} />移除封面</Button>}
+          <small className="lib-muted">支持 PNG / JPG / WebP / GIF，≤12MB；保存后生效。</small>
+        </div>
+      </div></Field>
       <Field label="书名"><input className={inputCls} value={title} onChange={e => setTitle(e.target.value)} placeholder="给这部小说起个名字" autoFocus /></Field>
       <div className="form-row">
         <Field label="流派"><input className={inputCls} value={genre} onChange={e => setGenre(e.target.value)} placeholder="悬疑 / 科幻 / 古言…" /></Field>

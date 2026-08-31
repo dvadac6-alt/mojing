@@ -13,6 +13,8 @@ backend/dist/
 release/
 __pycache__/
 *.py[cod]
+.venv/
+.pytest_cache/
 
 *.log
 *.local

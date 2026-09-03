@@ -182,3 +182,17 @@ def _as_local_date(value) -> "object":
     return datetime.now(timezone.utc).astimezone().date()
 
 
+
+
+def sniff_image_ext(data: bytes) -> str | None:
+    """优化审查 5.2：按 magic bytes 识别真实图片格式（返回不带点的扩展名），
+    伪装成图片的非图片内容返回 None。RIFF 容器需确认第 8-12 字节是 WEBP。"""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None

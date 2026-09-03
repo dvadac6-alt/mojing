@@ -677,7 +677,7 @@ export function LibraryPage() {
     <PageHeader eyebrow="本地知识库" title="参考资料库"
       desc="导入的资料会被切块并向量化，AI 续写时自动检索相关片段作为参考（写作页辅助中心「资料」开关）。"
       actions={<Button kind="primary" onClick={() => setImportOpen(true)}><Plus size={14} />导入资料</Button>} />
-    {ragEnabled === false && <div className="rag-warn-banner">未启用语义检索：到 设置 → AI 模型 → 「配置 RAG 模型」填入 Embedding 服务后，资料库才能被检索注入。</div>}
+    {ragEnabled === false && <div className="rag-warn-banner">未启用语义检索：到 设置 → AI 模型 → 「RAG 模型 API」分区填入 Embedding 服务后，资料库才能被检索注入。</div>}
     <div className="library-body">
       <aside className="library-list">
         {loading && <p className="lib-muted">读取资料…</p>}

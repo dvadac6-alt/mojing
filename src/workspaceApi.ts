@@ -391,9 +391,17 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
  * ReadableStream through `for await` stalled in the packaged Chromium (the
  * generator never resumed after its first yield), so streaming silently hung.
  * The plain async/await loop below reads the same stream reliably. */
+/** AI 帮写简介请求体（/ai/synopsis，无 novel 归属）。 */
+export type AISynopsisRequest = {
+  title: string
+  genre: string
+  hints: string
+  config_id?: number | null
+}
+
 export async function runAIStream(
   path: string,
-  body: AIGenerateRequest,
+  body: AIGenerateRequest | AISynopsisRequest,
   opts: { signal?: AbortSignal; onChunk: (text: string, model: string) => void },
 ): Promise<void> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -796,6 +804,14 @@ const api = {
       total_calls: number
       by_model: { model: string; total_tokens: number; calls: number; prompt: number; completion: number }[]
     }>(`/novels/${novelId}/ai/usage?days=${days}`),
+  /** Cross-novel usage stats for the dedicated stats page (cached split by model). */
+  aiUsageStats: (days = 30) =>
+    request<{
+      days: number
+      totals: { calls: number; prompt: number; cached: number; uncached_input: number; completion: number; total: number }
+      series: { date: string; total: number; calls: number; cached: number }[]
+      by_model: { model: string; calls: number; prompt: number; cached: number; completion: number; total: number }[]
+    }>(`/ai/usage/stats?days=${days}`),
   exportNovel: async (novelId: string, format: 'txt' | 'markdown' | 'docx' | 'epub', chapterIds?: string[]) => {
     const response = await fetch(`${API_BASE}/novels/${novelId}/export`, {
       method: 'POST',

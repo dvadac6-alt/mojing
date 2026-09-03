@@ -303,8 +303,10 @@ class MapStroke(Base):
 
     # Hot query paths (list-by-novel / strokes-by-map) hit these columns on
     # every request; SQLite does not index FK columns on its own.
+    # 优化审查 4.2：(map_id, seq) 唯一约束兜住"并发落笔算出相同序号"的竞态。
     __table_args__ = (
-        (Index("ix_map_strokes_map_seq", "map_id", "seq"), Index("ix_map_strokes_map_color", "map_id", "color"),)
+        Index("ix_map_strokes_map_seq", "map_id", "seq"), Index("ix_map_strokes_map_color", "map_id", "color"),
+        UniqueConstraint("map_id", "seq", name="uq_map_strokes_map_seq"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -406,7 +408,10 @@ class AIConfig(Base):
     base_url: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     api_key: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     temperature: Mapped[float] = mapped_column(Float, default=0.85, nullable=False)
-    max_tokens: Mapped[int] = mapped_column(Integer, default=1200, nullable=False)
+    # 50k is an "effectively uncapped" default: max_tokens is a ceiling, not a
+    # target, and providers that reject oversized values are auto-retried at
+    # their own limit by OpenAICompatProvider (see _max_tokens_cap_from_error).
+    max_tokens: Mapped[int] = mapped_column(Integer, default=50000, nullable=False)
     # Model context window (tokens) fetched from the provider's /models metadata.
     context_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(default=False, nullable=False)
@@ -450,6 +455,13 @@ class DocumentChunk(Base):
     """RAG 索引块：正文章节与资料库共用。embedding 为 float32 数组序列化的 BLOB；
     NULL 表示待向量化（API 失败时落库，下次保存补齐）。"""
     __tablename__ = "document_chunks"
+
+    # 优化审查 4.3：删除按 (source_type, source_id)，检索按
+    # (novel_id, source_type, embedding_model) 过滤——补两条复合索引。
+    __table_args__ = (
+        Index("ix_document_chunks_source", "source_type", "source_id"),
+        Index("ix_document_chunks_retrieval", "novel_id", "source_type", "embedding_model"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     novel_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
@@ -547,7 +559,9 @@ class AIUsage(Base):
     # Hot query paths (list-by-novel / strokes-by-map) hit these columns on
     # every request; SQLite does not index FK columns on its own.
     __table_args__ = (
-        (Index("ix_ai_usage_novel_created", "novel_id", "created_at"),)
+        # 优化审查 4.3：跨作品统计端点只按 created_at 过滤，补单列索引。
+        (Index("ix_ai_usage_novel_created", "novel_id", "created_at"),
+         Index("ix_ai_usage_created", "created_at"))
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -557,6 +571,9 @@ class AIUsage(Base):
     model: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     mode: Mapped[str] = mapped_column(String(40), default="", nullable=False)
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # 输入中命中服务商上下文缓存的部分（DeepSeek prompt_cache_hit_tokens /
+    # OpenAI prompt_tokens_details.cached_tokens）；未报告的旧记录为 0。
+    cached_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

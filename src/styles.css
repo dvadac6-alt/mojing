@@ -1238,6 +1238,9 @@ html[data-theme='dark'] .thread-card footer { border-top-color: var(--line-weak)
 /* settings section nav active */
 .settings-page aside nav button.active { background: #efe9e1; color: #4d3a2c; box-shadow: inset 2px 0 #c89a7c; }
 .settings-config-list { display: flex; flex-direction: column; gap: 9px; }
+/* 写作模型分区底部的虚线「添加写作模型」入口 */
+.add-config-btn { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px; border: 1px dashed var(--line-2); border-radius: var(--r-md); background: transparent; color: var(--text-3); font-size: var(--fs-sm); cursor: pointer; }
+.add-config-btn:hover { color: var(--accent); border-color: var(--accent); }
 .config-card { padding: 14px clamp(14px, 1.4vw, 20px); display: flex; flex-wrap: wrap; align-items: center; gap: 14px; border: 1px solid #e2dfd6; border-radius: var(--r-md); background: var(--bg-panel); }
 .config-card.active { border-color: #c9a98f; background: #fdf7f0; }
 .config-card .cfg-icon { width: 38px; height: 38px; display: grid; place-items: center; border-radius: var(--r-md); background: #2f3839; color: #f1c5a5; }
@@ -1387,15 +1390,44 @@ html[data-theme='dark'] .toast { background: #141817; }
   font-size: var(--fs-sm); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 
-/* ===================== RAG：设置页状态卡 / 表单分组标题 ===================== */
-.rag-status-card {
-  max-width: 720px; margin: 0 auto 14px; padding: 12px 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
-  border: 1px solid var(--line-2); border-radius: var(--r-md); background: var(--bg-panel);
-}
-.rag-status-card > div { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.rag-status-card strong { font-size: var(--fs-md); color: var(--text-1); }
-.rag-status-card small { color: var(--text-3); font-size: var(--fs-sm); }
-.rag-status-card .rag-warn { color: var(--warn); }
+/* ===================== RAG：设置页「RAG 模型 API」分区内联表单 / 表单分组标题 ===================== */
+/* 预设 + 单行输入（模型 / Base URL / Key 并排）+ 状态行，不再走弹窗。 */
+.rag-inline { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; }
+.rag-inline-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+/* 基数压到 120px：720px 内容列里三个输入 + 测试/保存 才能真正同行 */
+.rag-inline-row input { flex: 1 1 120px; min-width: 0; }
+.rag-inline-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text-3); font-size: var(--fs-sm); }
+.rag-warn { color: var(--warn); }
+
+/* ── 使用统计页（设置 → 使用统计）── */
+.usage-days { display: flex; justify-content: flex-end; padding: 12px 18px 0; }
+.usage-stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 9px; padding: 14px 18px 4px; }
+.usage-stat-card { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; border: 1px solid var(--line-2); border-radius: var(--r-md); background: var(--bg-inset); }
+.usage-stat-card label { font-size: var(--fs-xs); color: var(--text-3); }
+.usage-stat-card strong { font-size: 17px; font-family: var(--font-serif); }
+.usage-stat-card small { font-size: var(--fs-xs); color: var(--text-muted); }
+.usage-stat-card.hit { border-color: #9db8a5; background: #eef4ef; }
+.usage-stat-card.hit strong { color: #4f7a5c; }
+.usage-stat-card.miss { border-color: #d9bfa6; background: #faf3ea; }
+.usage-stat-card.miss strong { color: #a2744a; }
+.usage-daily { display: flex; flex-direction: column; gap: 7px; padding: 10px 18px 14px; }
+.usage-daily > strong { font-size: var(--fs-sm); }
+.usage-daily-bars { display: flex; align-items: flex-end; gap: 2px; height: 56px; }
+.usage-daily-bar { flex: 1; min-width: 2px; height: 100%; display: flex; align-items: flex-end; }
+.usage-daily-bar span { display: block; width: 100%; border-radius: 2px 2px 0 0; background: #c9a98f; opacity: .85; }
+.usage-daily-bar:hover span { opacity: 1; background: var(--accent); }
+.usage-daily > small { color: var(--text-muted); font-size: var(--fs-xs); }
+.usage-model-table { display: flex; flex-direction: column; margin: 12px 18px 8px; border: 1px solid var(--line-2); border-radius: var(--r-md); overflow-x: auto; }
+.usage-model-table header, .usage-model-table .usage-model-row { display: grid; grid-template-columns: minmax(130px, 1.6fr) repeat(6, minmax(64px, 1fr)); gap: 6px; padding: 9px 12px; align-items: center; }
+.usage-model-table header { font-size: var(--fs-xs); color: var(--text-3); border-bottom: 1px solid var(--line-2); background: var(--bg-inset); }
+.usage-model-table .usage-model-row { font-size: var(--fs-sm); border-bottom: 1px solid var(--bg-inset); }
+.usage-model-table .usage-model-row:last-child { border-bottom: 0; }
+.usage-model-row span { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); }
+.usage-model-row strong:first-child { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-model-row strong:last-child { text-align: right; }
+.usage-model-row .hit { color: #4f7a5c; }
+.usage-model-row .miss { color: #a2744a; }
+.usage-note { display: block; padding: 0 18px 13px; color: var(--text-muted); font-size: var(--fs-xs); }
 .form-sec-title { margin: 14px 0 8px; padding-top: 10px; border-top: 1px dashed var(--line-2); font-size: var(--fs-sm); font-weight: 700; color: var(--text-2); }
 .form-sec-title small { margin-left: 8px; font-weight: 400; color: var(--text-muted); }
 .rag-warn-banner { max-width: 780px; margin: 0 auto 14px; padding: 9px 14px; border-radius: var(--r-md); background: var(--accent-soft); color: var(--accent); font-size: var(--fs-sm); }
@@ -1430,9 +1462,6 @@ html[data-theme='dark'] .toast { background: #141817; }
 .lib-hit span { color: var(--accent); font-size: var(--fs-xs); }
 .lib-hit p { margin: 0; color: var(--text-3); font-size: var(--fs-sm); line-height: 1.7; }
 @media (max-width: 980px) { .library-body { grid-template-columns: 1fr; } }
-
-/* RAG 状态卡操作区 */
-.rag-status-actions { display: flex; gap: 8px; flex: 0 0 auto; }
 
 /* 懒加载页面切换时的占位（App.tsx Suspense fallback） */
 .page-loading-fallback { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-3); font-size: var(--fs-sm); }
@@ -1496,6 +1525,19 @@ html[data-theme='dark'] .toast { background: #141817; }
 .tpl-chip { display: inline-flex; align-items: center; gap: 3px; padding: 2px 9px; border: 1px solid #d7d4cc; border-radius: 999px; background: transparent; font-size: 11px; color: var(--text-2); cursor: pointer; white-space: nowrap; }
 .tpl-chip:hover { border-color: var(--accent); color: var(--accent); }
 .tpl-chip.manage { padding: 2px 6px; }
+/* 写作面板「按简介创作第一章」冷启动入口：比普通模板 chip 更醒目一点 */
+.tpl-chip.first-chapter { border-color: #c9a98f; color: #9c7b5f; background: #fdf7f0; }
+.tpl-chip.first-chapter:hover { background: #f8eee3; }
+
+/* ── 新建/编辑作品弹窗：简介 AI 帮写 ── */
+.synopsis-toolbar { display: flex; justify-content: flex-end; margin-top: -4px; }
+.ai-help-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border: 1px solid #d7d4cc; border-radius: 999px; background: transparent; font-size: 11px; color: var(--text-2); cursor: pointer; }
+.ai-help-toggle:hover, .ai-help-toggle.on { border-color: var(--accent); color: var(--accent); }
+.ai-synopsis-box { margin-top: 8px; padding: 10px 12px; border: 1px dashed #d7d4cc; border-radius: var(--r-md); display: flex; flex-direction: column; gap: 8px; }
+.ai-synopsis-box textarea { min-height: 52px; }
+.ai-synopsis-note { margin: 0; font-size: 11px; line-height: 1.6; color: var(--text-muted); }
+.ai-synopsis-actions { display: flex; align-items: center; gap: 8px; }
+.ai-synopsis-live { font-size: 11px; color: var(--text-3); }
 .tpl-manage-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 10px; margin-bottom: 6px; border-radius: var(--r-sm); background: var(--bg-inset); }
 .tpl-manage-row strong { font-size: var(--fs-xs); }
 .tpl-manage-row p { font-size: 11px; color: var(--text-3); margin-top: 3px; line-height: 1.5; word-break: break-all; }
@@ -1570,6 +1612,9 @@ html[data-theme='dark'] .pref-stepper button:hover { background: rgba(255,255,25
 .setting-pad { padding: 12px 18px 14px; }
 .pref-card .database-card, .pref-card .config-card { border-top: 0; padding-left: 18px; padding-right: 18px; }
 .pref-card .backup-list { margin: 0 18px 14px; }
+/* 写作模型列表放进 pref-card 后：列表留边，卡片退回自身内边距避免双重缩进 */
+.pref-card .settings-config-list { margin: 0 18px 14px; }
+.pref-card .settings-config-list .config-card { padding-left: 14px; padding-right: 14px; }
 
 /* 设置卡片内的操作按钮统一宽度，右缘对齐 */
 .database-card > .btn, .config-card > .btn { min-width: 108px; }

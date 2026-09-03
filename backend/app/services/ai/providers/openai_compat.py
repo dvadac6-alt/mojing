@@ -4,6 +4,7 @@ POST {base_url}/chat/completions with an SSE stream of chat.completion.chunk."""
 from __future__ import annotations
 
 import json
+import re
 from typing import AsyncIterator
 
 try:
@@ -12,6 +13,24 @@ try:
     _HTTPX_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
     _HTTPX_AVAILABLE = False
+
+
+def _max_tokens_cap_from_error(message: str, requested: int) -> int | None:
+    """Extract the provider's real max_tokens ceiling from a rejection message.
+
+    Providers reject an oversized max_tokens outright instead of clamping it
+    (DeepSeek: "the valid range of max_tokens is [1, 8192]"; OpenAI: "This
+    model supports at most 16384 completion tokens"). So a generously
+    configured value must be retried at the provider's own limit, not fail."""
+    if "max_tokens" not in message.lower():
+        return None
+    for pattern in (r"\[\s*\d+\s*,\s*(\d+)\s*\]", r"at most (\d+)"):
+        match = re.search(pattern, message)
+        if match:
+            cap = int(match.group(1))
+            if 0 < cap < requested:
+                return cap
+    return None
 
 
 class OpenAICompatProvider:
@@ -39,6 +58,27 @@ class OpenAICompatProvider:
         if not self.available:
             raise RuntimeError("OpenAI-compatible provider needs httpx, base_url and api_key")
 
+        # A 4xx naming max_tokens is a ceiling mismatch, not a transient
+        # failure: retry once at the limit parsed from the error body (and
+        # only before any text has been yielded, so output is never replayed).
+        cap = max_tokens
+        for attempt in range(2):
+            produced = False
+            try:
+                async for piece in self._stream_once(messages, temperature=temperature, max_tokens=cap):
+                    produced = True
+                    yield piece
+                return
+            except RuntimeError as err:
+                retry_cap = _max_tokens_cap_from_error(str(err), cap)
+                if attempt == 0 and not produced and retry_cap:
+                    cap = retry_cap
+                    continue
+                raise
+
+    async def _stream_once(
+        self, messages: list[dict[str, str]], *, temperature: float, max_tokens: int
+    ) -> AsyncIterator[str]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -77,10 +117,16 @@ class OpenAICompatProvider:
                     # Usage may arrive on a final chunk even without stream_options.
                     usage = chunk.get("usage")
                     if usage:
+                        # Cached-input tokens: DeepSeek reports prompt_cache_hit_tokens,
+                        # OpenAI nests them under prompt_tokens_details.cached_tokens.
+                        # Providers that report neither just get 0.
+                        details = usage.get("prompt_tokens_details") or {}
+                        cached = usage.get("prompt_cache_hit_tokens") or details.get("cached_tokens") or 0
                         self.last_usage = {
                             "prompt_tokens": usage.get("prompt_tokens", 0),
                             "completion_tokens": usage.get("completion_tokens", 0),
                             "total_tokens": usage.get("total_tokens", 0),
+                            "cached_tokens": int(cached),
                         }
                     # 兼容端点常在流结束时发一个只带 usage、choices 为空列表的
                     # 收尾块（或心跳块）。key 存在时 get 的默认值不生效，直接取

@@ -374,7 +374,7 @@ class AIConfigCreate(BaseModel):
     base_url: str = ""
     api_key: str = ""
     temperature: float = 0.85
-    max_tokens: int = 1200
+    max_tokens: int = 50000
     context_length: int | None = None
     is_active: bool = False
 
@@ -436,6 +436,15 @@ class AIGenerateRequest(BaseModel):
     # Pick a specific AI config (model) for this call; omit to use the active one.
     config_id: int | None = None
     context: AIContextOptions = Field(default_factory=AIContextOptions)
+
+
+class AISynopsisRequest(BaseModel):
+    """AI 帮写作品简介（新建作品弹窗，作品可能尚未创建故无 novel_id）：
+    书名 / 类型取表单当前值，hints 是用户输入的创作提示词。"""
+    title: str = ""
+    genre: str = ""
+    hints: str = ""
+    config_id: int | None = None
 
 
 class AIConsistencyRequest(BaseModel):

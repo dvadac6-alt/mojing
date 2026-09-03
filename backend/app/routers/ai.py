@@ -17,6 +17,7 @@ from ..models import AIConfig, AIUsage, Chapter, Character, Novel, PlotThread, P
 from ..schemas import (
     AIConfigCreate, AIConfigResponse, AIConfigTestRequest, AIConfigUpdate,
     AIConsistencyRequest, AIDialogueRequest, AIGenerateRequest, AIModelsRequest,
+    AISynopsisRequest,
     PromptTemplateCreate, PromptTemplateResponse, PromptTemplateUpdate,
 )
 from ..services.ai import dispatcher, prompt_builder
@@ -362,8 +363,11 @@ async def _ai_generate_stream(req: AIGenerateRequest, prepared):
         try:
             with session_scope() as database:
                 database.add(AIUsage(
-                    novel_id=req.novel_id, model=model_name, mode=req.mode or "",
+                    # /ai/synopsis 等无 novel 归属的请求也能记账（novel_id 可空）。
+                    novel_id=getattr(req, "novel_id", None),
+                    model=model_name, mode=getattr(req, "mode", "") or "",
                     prompt_tokens=usage.get("prompt_tokens", 0),
+                    cached_tokens=usage.get("cached_tokens", 0),
                     completion_tokens=usage.get("completion_tokens", 0),
                     total_tokens=usage.get("total_tokens", 0),
                 ))
@@ -382,6 +386,36 @@ def _stream_response(req: AIGenerateRequest) -> StreamingResponse:
 @router.post("/ai/generate")
 def ai_generate(req: AIGenerateRequest):
     return _stream_response(req)
+
+
+@router.post("/ai/synopsis")
+def ai_synopsis(req: AISynopsisRequest, database: Session = Depends(get_db)):
+    """AI 帮写作品简介（新建/编辑作品弹窗）：书名、类型直接取表单值，配合
+    用户提示词流式生成一句话简介。作品此时可能尚未创建，所以不依赖 novel
+    记录、走独立的轻量提示词；SSE 格式与 /ai/generate 完全一致，前端
+    runAIStream 无需改动即可复用。"""
+    config = database.get(AIConfig, req.config_id) if req.config_id else None
+    if not config:
+        config = _active_config(database)
+    from ..security import decrypt_key
+    has_key = bool(decrypt_key(config.api_key)) if config else False
+    model_name = config.model if config and has_key and config.base_url else "mock (offline)"
+    parts = [f"书名：《{req.title.strip() or '未命名作品'}》"]
+    if req.genre.strip():
+        parts.append(f"类型：{req.genre.strip()}")
+    if req.hints.strip():
+        parts.append(f"创作提示：{req.hints.strip()}")
+    messages = [
+        {"role": "system",
+         "content": "你是资深的小说出版编辑，擅长用一两句话提炼一部小说的气质与卖点。"},
+        {"role": "user",
+         "content": "\n".join(parts)
+                    + "\n\n请为这部小说撰写一段简介：60~100 字，点出核心悬念或冲突，语言凝练、"
+                      "有画面感。只输出简介正文，不要加书名号、引号或任何解释。"},
+    ]
+    return StreamingResponse(_ai_generate_stream(req, (messages, config, model_name)),
+                             media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/ai/polish")
@@ -735,6 +769,62 @@ def novel_ai_usage(novel_id: str, days: int = Query(30, ge=1, le=366), database:
         "total_tokens": sum(v["total_tokens"] for v in by_model.values()),
         "total_calls": sum(v["calls"] for v in by_model.values()),
         "by_model": [{"model": k, **v} for k, v in sorted(by_model.items(), key=lambda kv: -kv[1]["total_tokens"])],
+    }
+
+
+@router.get("/ai/usage/stats")
+def ai_usage_stats(days: int = Query(30, ge=1, le=366), database: Session = Depends(get_db)):
+    """使用统计页（设置 → 使用统计）：跨作品的 AI 用量总账。按模型拆分
+    输入缓存命中 / 未命中，附每日序列供迷你图。cached=0 的历史记录视为
+    「未报告缓存」（归入未命中列，与真实 miss 不可区分，这是既有数据的
+    粒度上限）。"""
+    from datetime import date as date_cls, timedelta as td
+
+    since = _as_local_date_day(database, days)
+    rows = database.scalars(
+        select(AIUsage).where(AIUsage.created_at >= since).order_by(AIUsage.created_at)
+    ).all()
+
+    by_model: dict[str, dict[str, int]] = {}
+    today = date_cls.today()
+    daily: dict[str, dict[str, int]] = {
+        (today - td(days=i)).isoformat(): {"total": 0, "calls": 0, "cached": 0}
+        for i in range(days - 1, -1, -1)
+    }
+    for r in rows:
+        key = r.model or "mock (offline)"
+        bucket = by_model.setdefault(
+            key, {"calls": 0, "prompt": 0, "cached": 0, "completion": 0, "total": 0})
+        bucket["calls"] += 1
+        bucket["prompt"] += r.prompt_tokens
+        bucket["cached"] += r.cached_tokens
+        bucket["completion"] += r.completion_tokens
+        bucket["total"] += r.total_tokens
+        d = _as_local_date(r.created_at).isoformat()
+        if d in daily:
+            daily[d]["total"] += r.total_tokens
+            daily[d]["calls"] += 1
+            daily[d]["cached"] += r.cached_tokens
+
+    prompt = sum(v["prompt"] for v in by_model.values())
+    cached = sum(v["cached"] for v in by_model.values())
+    completion = sum(v["completion"] for v in by_model.values())
+    return {
+        "days": days,
+        "totals": {
+            "calls": sum(v["calls"] for v in by_model.values()),
+            "prompt": prompt,
+            "cached": cached,
+            # 防御 max：个别网关的 cached 上报口径异常时不出现负数。
+            "uncached_input": max(0, prompt - cached),
+            "completion": completion,
+            "total": sum(v["total"] for v in by_model.values()),
+        },
+        "series": [{"date": d, **vals} for d, vals in sorted(daily.items())],
+        "by_model": [
+            {"model": k, **v}
+            for k, v in sorted(by_model.items(), key=lambda kv: -kv[1]["total"])
+        ],
     }
 
 

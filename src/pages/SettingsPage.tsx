@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ElementType, type ReactNode } from 'react'
 import {
-  Bot, Check, CircleHelp, Database, Download, HardDrive, MapPin, PenLine, Plus, RefreshCw, Settings, ShieldCheck, Trash2, Upload,
+  BarChart3, Bot, Check, CircleHelp, Database, Download, HardDrive, MapPin, PenLine, Plus, RefreshCw, Settings, ShieldCheck, Trash2, Upload,
 } from 'lucide-react'
 import {
   chooseDataDirectory, workspaceApi,
@@ -11,14 +11,14 @@ import {
   readPresenceGap, writeAutosaveMs, writeEditorFont, writeFocusGoal, writePresenceGap,
 } from '../lib/constants'
 import { useTheme } from '../hooks/useTheme'
-import { areaCls, inputCls, selectCls } from '../lib/constants'
+import { areaCls, fmt, inputCls, selectCls } from '../lib/constants'
 import { Button, Field, FormFooter, Modal, PageHeader, Scroll } from '../components/ui'
 import { useAsyncAction } from '../hooks/useAsyncAction'
 import { confirmDialog } from '../components/Confirm'
 import { toast } from '../components/Toast'
 
 export function SettingsPage({ workspace, reload }: { workspace: Workspace; reload: () => Promise<void> }) {
-  const sections: [ElementType, string][] = [[Settings, '通用'], [PenLine, '编辑器'], [Bot, 'AI 模型'], [Download, '导出'], [HardDrive, '数据与备份'], [CircleHelp, '关于']]
+  const sections: [ElementType, string][] = [[Settings, '通用'], [PenLine, '编辑器'], [Bot, 'AI 模型'], [BarChart3, '使用统计'], [Download, '导出'], [HardDrive, '数据与备份'], [CircleHelp, '关于']]
   const [active, setActive] = useState('AI 模型')
   return <div className="settings-page">
     <aside>
@@ -27,6 +27,7 @@ export function SettingsPage({ workspace, reload }: { workspace: Workspace; relo
     </aside>
     <section>
       {active === 'AI 模型' && <AISection onSaved={reload} />}
+      {active === '使用统计' && <UsageStatsSection />}
       {active === '导出' && <ExportSection workspace={workspace} />}
       {active === '通用' && <GeneralSection />}
       {active === '编辑器' && <EditorSection />}
@@ -146,10 +147,9 @@ function AISection({ onSaved }: { onSaved: () => Promise<void> }) {
   }
   useEffect(() => { void load() }, [])
   const setActive = async (cfg: AIConfig) => { await workspaceApi.updateAIConfig(cfg.id, { is_active: true }); await load(); await onSaved() }
-  // ── RAG 索引状态 + 独立配置弹窗（RAG设计方案.md §七，v2 与写作模型解耦）──
-  const [rag, setRag] = useState<{ enabled: boolean; embed_model: string; chunks: { total: number; chapter: number; library: number; pending: number }; stale_model_chunks: number } | null>(null)
+  // ── RAG 索引状态（RAG设计方案.md §七，v2 与写作模型解耦为独立分区）──
+  const [rag, setRag] = useState<RagStatus | null>(null)
   const [rebuilding, setRebuilding] = useState(false)
-  const [ragFormOpen, setRagFormOpen] = useState(false)
   const loadRag = async () => { try { setRag(await workspaceApi.ragStatus()) } catch { /* ignore */ } }
   useEffect(() => { void loadRag() }, [configs])
   const rebuild = async () => {
@@ -159,45 +159,35 @@ function AISection({ onSaved }: { onSaved: () => Promise<void> }) {
   const remove = async (cfg: AIConfig) => { const ok = await confirmDialog({ title: '删除模型配置', message: `删除「${cfg.name}」的配置？已保存的 API Key 将一并清除。`, danger: true, confirmLabel: '删除' }); if (ok) { await workspaceApi.deleteAIConfig(cfg.id); await load() } }
   return <Scroll>
     <div style={{ maxWidth: 'min(720px, 100%)', margin: '0 auto' }}>
-      <PageHeader eyebrow="AI 调度" title="AI 模型" desc="配置 OpenAI 兼容的模型（GPT / DeepSeek / Claude 兼容端点）。未配置时将自动使用本地离线生成。" actions={<>
+      <PageHeader eyebrow="AI 调度" title="AI 模型" desc="写作模型负责生成正文，RAG 模型负责向量化检索；两个分区可用不同厂商。" actions={<>
         <Button onClick={async () => { try { const r = await workspaceApi.exportAIEnv(); if (r.ok) toast.success(`已同步到 ${r.path}`); else toast.error(r.detail) } catch (e) { toast.error('同步失败：' + (e instanceof Error ? e.message : '')) } }}><Download size={14} />同步到 .env</Button>
-        <Button onClick={() => setRagFormOpen(true)}><Database size={14} />{rag?.enabled ? 'RAG 模型' : '配置 RAG 模型'}</Button>
-        <Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />添加写作模型</Button>
       </>} />
       <div className="pref-list">
       <div className="pref-note" style={{ marginBottom: 0 }}>
         <ShieldCheck size={14} />
         {meta?.offline_fallback && '已启用离线兜底：未配置可用密钥时，AI 面板仍可生成示例草稿。'} API Key 加密存储于本地，永不下发至前端。点「同步到 .env」可把当前配置（含 Key 明文）写入项目根目录的 .env 文件，方便备份与查看。
       </div>
-      {rag && (
-        <div className="rag-status-card">
-          <div>
-            <strong>检索增强（RAG）{rag.enabled ? '已启用' : '未启用'}</strong>
-            <small>
-              {rag.enabled
-                ? `模型 ${rag.embed_model} · 章节 ${rag.chunks.chapter} 块 / 资料 ${rag.chunks.library} 块${rag.chunks.pending ? ` · 待向量化 ${rag.chunks.pending}` : ''}`
-                : '点右上「配置 RAG 模型」填入 Embedding 服务（可与写作模型不同厂商），自动启用前文检索 / 资料库 / 语义搜索。'}
-            </small>
-            {rag.stale_model_chunks > 0 && <small className="rag-warn">检测到 {rag.stale_model_chunks} 块使用旧模型向量，请重建索引。</small>}
-          </div>
-          <div className="rag-status-actions">
-            <Button onClick={() => setRagFormOpen(true)}>{rag.enabled ? '编辑' : '去配置'}</Button>
-            <Button onClick={rebuild} disabled={rebuilding || !rag.enabled}>{rebuilding ? '重建中…' : '重建索引'}</Button>
-          </div>
+
+      {/* 分区一：RAG 模型 API —— 单行内联表单，无需弹窗 */}
+      <PrefCard title="RAG 模型 API" desc="Embedding 向量检索服务（前文检索 / 资料库 / 语义搜索），与写作模型相互独立。">
+        <RagInlineForm rag={rag} rebuilding={rebuilding} onRebuild={rebuild} onSaved={loadRag} />
+      </PrefCard>
+
+      {/* 分区二：写作模型 API —— 卡片列表 + 添加/编辑弹窗（完整表单） */}
+      <PrefCard title="写作模型 API" desc="配置 OpenAI 兼容的模型（GPT / DeepSeek / Claude 兼容端点）。未配置时将自动使用本地离线生成。">
+        <div className="settings-config-list">
+          {loading && <p style={{ color: '#999', fontSize: 11 }}>读取配置…</p>}
+          {!loading && configs.length === 0 && <div className="empty-state"><span><Bot size={22} /></span><h3>还没有配置模型</h3><p>添加一个 OpenAI 兼容模型以启用真实 AI 续写；在此之前将使用离线生成。</p><Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />添加模型</Button></div>}
+          {configs.map(cfg => <div className={'config-card' + (cfg.is_active ? ' active' : '')} key={cfg.id}>
+            <span className="cfg-icon"><Bot size={18} /></span>
+            <div className="cfg-body"><strong>{cfg.name} · {cfg.model}</strong><small>{cfg.base_url || '无 base_url'} · temperature {cfg.temperature} · max {cfg.max_tokens}</small></div>
+            {cfg.is_active ? <span className="badge">当前</span> : <Button onClick={() => void setActive(cfg)}>设为当前</Button>}
+            <Button onClick={() => setEditing(cfg)}><PenLine size={13} />编辑</Button>
+            <button className="icon-button" onClick={() => void remove(cfg)}><Trash2 size={15} /></button>
+          </div>)}
+          <button className="add-config-btn" onClick={() => setCreating(true)}><Plus size={14} />添加写作模型</button>
         </div>
-      )}
-      {ragFormOpen && <RagConfigForm onClose={() => setRagFormOpen(false)} onSaved={async () => { setRagFormOpen(false); await loadRag() }} />}
-      <div className="settings-config-list">
-        {loading && <p style={{ color: '#999', fontSize: 11 }}>读取配置…</p>}
-        {!loading && configs.length === 0 && <div className="empty-state"><span><Bot size={22} /></span><h3>还没有配置模型</h3><p>添加一个 OpenAI 兼容模型以启用真实 AI 续写；在此之前将使用离线生成。</p><Button kind="primary" onClick={() => setCreating(true)}><Plus size={14} />添加模型</Button></div>}
-        {configs.map(cfg => <div className={'config-card' + (cfg.is_active ? ' active' : '')} key={cfg.id}>
-          <span className="cfg-icon"><Bot size={18} /></span>
-          <div className="cfg-body"><strong>{cfg.name} · {cfg.model}</strong><small>{cfg.base_url || '无 base_url'} · temperature {cfg.temperature} · max {cfg.max_tokens}</small></div>
-          {cfg.is_active ? <span className="badge">当前</span> : <Button onClick={() => void setActive(cfg)}>设为当前</Button>}
-          <Button onClick={() => setEditing(cfg)}><PenLine size={13} />编辑</Button>
-          <button className="icon-button" onClick={() => void remove(cfg)}><Trash2 size={15} /></button>
-        </div>)}
-      </div>
+      </PrefCard>
       </div>
     </div>
     {creating && <AIConfigForm onClose={() => setCreating(false)} onSaved={async () => { setCreating(false); await load() }} />}
@@ -205,13 +195,100 @@ function AISection({ onSaved }: { onSaved: () => Promise<void> }) {
   </Scroll>
 }
 
-/** RAG embedding 独立配置弹窗（与写作模型完全解耦，可填不同厂商）。 */
+type RagStatus = { enabled: boolean; embed_model: string; chunks: { total: number; chapter: number; library: number; pending: number }; stale_model_chunks: number }
+
+/** 使用统计（设置 → 使用统计）：跨作品的 AI 用量总账。
+ *  总量 / 输入缓存命中拆分 / 按模型分类表，另附每日消耗迷你柱图。 */
+type UsageStats = {
+  days: number
+  totals: { calls: number; prompt: number; cached: number; uncached_input: number; completion: number; total: number }
+  series: { date: string; total: number; calls: number; cached: number }[]
+  by_model: { model: string; calls: number; prompt: number; cached: number; completion: number; total: number }[]
+}
+
+function UsageStatsSection() {
+  const [days, setDays] = useState(30)
+  const [data, setData] = useState<UsageStats | null>(null)
+  const [loading, setLoading] = useState(true)
+  const load = async (d: number) => {
+    setLoading(true)
+    try { setData(await workspaceApi.aiUsageStats(d)) } finally { setLoading(false) }
+  }
+  useEffect(() => { void load(days) }, [days])
+  const t = data?.totals
+  const maxDay = Math.max(1, ...(data?.series.map(s => s.total) ?? [1]))
+  const hitPct = t && t.prompt > 0 ? Math.round((t.cached / t.prompt) * 100) : 0
+  return <Scroll>
+    <div style={{ maxWidth: 'min(720px, 100%)', margin: '0 auto' }}>
+      <PageHeader eyebrow="AI 调度" title="使用统计" desc="全部作品的 AI 调用与 token 消耗总账，按模型分类；缓存命中是输入中享受折扣计费的部分。" />
+      <div className="pref-list">
+        <PrefCard title="用量总览" desc={`统计范围可切换，跨所有作品汇总。`}>
+          <div className="usage-days">
+            <div className="pref-segments" role="group" aria-label="统计范围">
+              {[7, 30, 90].map(d => (
+                <button key={d} className={days === d ? 'active' : ''} onClick={() => setDays(d)}>{d} 天</button>
+              ))}
+            </div>
+          </div>
+          {loading && !data && <p style={{ color: '#999', fontSize: 11, padding: '0 18px' }}>读取用量…</p>}
+          {t && <>
+            <div className="usage-stat-cards">
+              <div className="usage-stat-card"><label>总消耗</label><strong>{fmt(t.total)}</strong><small>tokens · {fmt(t.calls)} 次调用</small></div>
+              <div className="usage-stat-card"><label>输入</label><strong>{fmt(t.prompt)}</strong><small>tokens（提示词）</small></div>
+              <div className="usage-stat-card hit"><label>缓存命中</label><strong>{fmt(t.cached)}</strong><small>占输入 {hitPct}%</small></div>
+              <div className="usage-stat-card miss"><label>输入未缓存</label><strong>{fmt(t.uncached_input)}</strong><small>tokens</small></div>
+              <div className="usage-stat-card"><label>输出</label><strong>{fmt(t.completion)}</strong><small>tokens（生成）</small></div>
+            </div>
+            <div className="usage-daily">
+              <strong>每日消耗</strong>
+              <div className="usage-daily-bars">
+                {data.series.map(s => (
+                  <div key={s.date} className="usage-daily-bar" title={`${s.date}：${fmt(s.total)} tokens · ${s.calls} 次 · 缓存命中 ${fmt(s.cached)}`}>
+                    <span style={{ height: `${Math.max(2, Math.round((s.total / maxDay) * 100))}%` }} />
+                  </div>
+                ))}
+              </div>
+              <small>近 {data.series.length} 天 · 单日峰值 {fmt(maxDay)} tokens</small>
+            </div>
+          </>}
+        </PrefCard>
+        <PrefCard title="按模型分类" desc="输入拆分为缓存命中 / 未缓存两列；缓存命中通常按折扣计费（如 DeepSeek 约为原价 1/10）。">
+          {data && data.by_model.length > 0
+            ? <div className="usage-model-table">
+              <header><span>模型</span><span>调用</span><span>输入</span><span>缓存命中</span><span>未缓存</span><span>输出</span><span>合计</span></header>
+              {data.by_model.map(m => (
+                <div key={m.model} className="usage-model-row">
+                  <strong title={m.model}>{m.model}</strong>
+                  <span>{fmt(m.calls)}</span>
+                  <span>{fmt(m.prompt)}</span>
+                  <span className="hit">{fmt(m.cached)}</span>
+                  <span className="miss">{fmt(Math.max(0, m.prompt - m.cached))}</span>
+                  <span>{fmt(m.completion)}</span>
+                  <strong>{fmt(m.total)}</strong>
+                </div>
+              ))}
+            </div>
+            : !loading && <div className="empty-state" style={{ margin: '14px 18px' }}><h3>暂无用量记录</h3><p>使用 AI 续写、润色或生成简介后，这里会出现统计。</p></div>}
+          <small className="usage-note">旧版本记录未上报缓存命中数，均计入「未缓存」列。</small>
+        </PrefCard>
+      </div>
+    </div>
+  </Scroll>
+}
+
+/** RAG embedding 配置（RAG设计方案.md §七）：与写作模型完全解耦的独立分区，
+ *  压成一行内联表单——模型 / Base URL / Key 三个输入并排，保存与测试随行。 */
 const RAG_PRESETS = [
   { key: 'siliconflow', label: '硅基流动（推荐）', base_url: 'https://api.siliconflow.cn/v1', model: 'BAAI/bge-m3' },
   { key: 'openai', label: 'OpenAI', base_url: 'https://api.openai.com/v1', model: 'text-embedding-3-small' },
 ]
 
-function RagConfigForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+function RagInlineForm({ rag, rebuilding, onRebuild, onSaved }: {
+  rag: RagStatus | null
+  rebuilding: boolean
+  onRebuild: () => Promise<void>
+  onSaved: () => Promise<void>
+}) {
   const [model, setModel] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
@@ -228,7 +305,6 @@ function RagConfigForm({ onClose, onSaved }: { onClose: () => void; onSaved: () 
     }).catch(() => {})
   }, [])
 
-  const applyPreset = (p: typeof RAG_PRESETS[number]) => { setBaseUrl(p.base_url); setModel(p.model) }
   const payload = () => {
     const data: { model?: string; base_url?: string; api_key?: string } = { model: model.trim(), base_url: baseUrl.trim() }
     if (apiKey !== '') data.api_key = apiKey
@@ -236,37 +312,41 @@ function RagConfigForm({ onClose, onSaved }: { onClose: () => void; onSaved: () 
   }
   const submit = () => run(async () => {
     await workspaceApi.saveRagConfig(payload())
-    onSaved()
+    setApiKey('')
+    toast.success('RAG 配置已保存')
+    await onSaved()
   })
   const test = async () => {
     setTesting(true); setTestResult('')
     try {
-      const data: { model?: string; base_url?: string; api_key?: string } = { model: model.trim(), base_url: baseUrl.trim() }
-      if (apiKey !== '') data.api_key = apiKey
-      const res = await workspaceApi.testRagConfig(data)
+      const res = await workspaceApi.testRagConfig(payload())
       setTestResult(res.detail)
     } catch (e) { setTestResult(e instanceof Error ? e.message : '测试失败') } finally { setTesting(false) }
   }
-  return <Modal eyebrow="RAG 检索增强" title="RAG 模型配置" icon={Database} onClose={onClose}
-    footer={<FormFooter error={error} busy={busy} onClose={onClose} onSubmit={submit} extra={
-      <Button onClick={test} disabled={testing || busy || !model.trim() || !baseUrl.trim()}>{testing ? '测试中…' : '测试连通'}</Button>
-    } />}>
-    <div className="form-body">
-      <Field label="服务商预设（自动填写，可修改）">
-        <div className="segments">
-          {RAG_PRESETS.map(p => <button key={p.key} className={baseUrl === p.base_url ? 'active' : ''} onClick={() => applyPreset(p)}>{p.label}</button>)}
-        </div>
-      </Field>
-      <Field label="Embedding 模型 ID"><input className={inputCls} value={model} onChange={e => setModel(e.target.value)} placeholder="BAAI/bge-m3" autoFocus /></Field>
-      <Field label="Base URL（需提供 /v1/embeddings 接口）"><input className={inputCls} value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="https://api.siliconflow.cn/v1" /></Field>
-      <Field label="API Key"><input className={inputCls} type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={hasKey ? `已保存（${keyHint}），留空保持不变` : '该服务商的 API Key'} /></Field>
-      {testResult && <div className="form-error" style={{ color: testResult.startsWith('连接成功') ? '#5a7d6a' : undefined }}>{testResult}</div>}
-      <small style={{ color: 'var(--text-muted)', lineHeight: 1.7 }}>
-        RAG 与写作模型相互独立——写作继续用左边的模型列表，这里只负责向量化检索。<br />
-        启用后切块文本将发送至该服务商做向量化；正文与索引仍完整保存在本地。
-      </small>
+  return <div className="rag-inline">
+    <div className="segments" style={{ alignSelf: 'flex-start' }}>
+      {RAG_PRESETS.map(p => <button key={p.key} className={baseUrl === p.base_url ? 'active' : ''} onClick={() => { setBaseUrl(p.base_url); setModel(p.model) }}>{p.label}</button>)}
     </div>
-  </Modal>
+    <div className="rag-inline-row">
+      <input className={inputCls} value={model} onChange={e => setModel(e.target.value)} placeholder="Embedding 模型 ID，如 BAAI/bge-m3" />
+      <input className={inputCls} value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="Base URL（需含 /v1/embeddings）" />
+      <input className={inputCls} type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={hasKey ? `Key 已保存（${keyHint}），留空保持` : 'API Key'} />
+      <Button onClick={test} disabled={testing || busy || !model.trim() || !baseUrl.trim()}>{testing ? '测试中…' : '测试'}</Button>
+      <Button kind="primary" onClick={submit} disabled={busy}>保存</Button>
+    </div>
+    {error && <div className="form-error">{error}</div>}
+    {testResult && <div className="form-error" style={{ color: testResult.startsWith('连接成功') ? '#5a7d6a' : undefined }}>{testResult}</div>}
+    <div className="rag-inline-status">
+      {rag?.enabled
+        ? <span>已启用 · 模型 {rag.embed_model} · 章节 {rag.chunks.chapter} 块 / 资料 {rag.chunks.library} 块{rag.chunks.pending ? ` · 待向量化 ${rag.chunks.pending}` : ''}</span>
+        : <span>未启用——填写并保存后自动启用前文检索 / 资料库 / 语义搜索。</span>}
+      {rag && rag.stale_model_chunks > 0 && <span className="rag-warn">检测到 {rag.stale_model_chunks} 块使用旧模型向量，请重建索引。</span>}
+      <Button onClick={() => void onRebuild()} disabled={rebuilding || !rag?.enabled}>{rebuilding ? '重建中…' : '重建索引'}</Button>
+    </div>
+    <small style={{ color: 'var(--text-muted)', lineHeight: 1.7 }}>
+      启用后切块文本将发送至该服务商做向量化；正文与索引仍完整保存在本地。
+    </small>
+  </div>
 }
 
 function AIConfigForm({ initial, onClose, onSaved }: { initial?: AIConfig; onClose: () => void; onSaved: () => void }) {
@@ -278,7 +358,7 @@ function AIConfigForm({ initial, onClose, onSaved }: { initial?: AIConfig; onClo
   // Leaving it blank on save keeps the stored key (api_key omitted).
   const [apiKey, setApiKey] = useState('')
   const [temperature, setTemperature] = useState(String(initial?.temperature ?? 0.85))
-  const [maxTokens, setMaxTokens] = useState(String(initial?.max_tokens ?? 1200))
+  const [maxTokens, setMaxTokens] = useState(String(initial?.max_tokens ?? 50000))
   const [isActive, setIsActive] = useState(initial?.is_active ?? false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState('')
@@ -306,7 +386,7 @@ function AIConfigForm({ initial, onClose, onSaved }: { initial?: AIConfig; onClo
   const submit = () => run(async () => {
     // Batch create: multiple models ticked in the picker (add flow only).
     const batch = (!initial && models && !manualModel && selectedModels.size > 0) ? [...selectedModels] : null
-    const base: Record<string, unknown> = { provider, base_url: baseUrl, temperature: Number(temperature) || 0.85, max_tokens: Number(maxTokens) || 1200, is_active: isActive }
+    const base: Record<string, unknown> = { provider, base_url: baseUrl, temperature: Number(temperature) || 0.85, max_tokens: Number(maxTokens) || 50000, is_active: isActive }
     if (apiKey !== '') base.api_key = apiKey
     if (batch) {
       for (const mid of batch) {

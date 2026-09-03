@@ -13,7 +13,8 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from starlette.background import BackgroundTask
 
 from ..database import reset_data_dir, session_scope, set_data_dir, storage_info
 from ..schemas import LintWordlistImport, LintWordlistUpdate, StoragePathUpdate, WebDavConfigUpdate
@@ -251,29 +252,38 @@ def export_data():
     -wal/-shm sidecar files needed to restore). The rolling backups/ folder and
     the local logs/ folder are excluded — backups can hold up to 10 full DB
     copies (and re-import would re-snapshot them, compounding every round-trip);
-    logs are machine-local diagnostics, not user data."""
-    import io
+    logs are machine-local diagnostics, not user data.
+
+    优化审查 5.1：zip 先写数据目录旁的临时文件再以 FileResponse 流出，响应
+    结束后由后台任务清理——不再把"库 + 压缩包"双份塞进内存。"""
+    import os
     import zipfile
     from ..database import DATA_DIR, engine
     with engine.connect() as conn:
         conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.commit()
-    buf = io.BytesIO()
-    base = DATA_DIR
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for path in base.rglob("*"):
-            if not path.is_file():
-                continue
-            rel = path.relative_to(base)
-            if rel.parts and rel.parts[0] in ("backups", "logs"):
-                continue
-            zf.write(path, rel)
-    buf.seek(0)
+    fd, tmp_path = tempfile.mkstemp(prefix="mojing-export-", suffix=".zip", dir=str(DATA_DIR.parent))
+    os.close(fd)
+    try:
+        with open(tmp_path, "wb") as fh:
+            with zipfile.ZipFile(fh, "w", zipfile.ZIP_DEFLATED) as zf:
+                base = DATA_DIR
+                for path in base.rglob("*"):
+                    if not path.is_file():
+                        continue
+                    rel = path.relative_to(base)
+                    if rel.parts and rel.parts[0] in ("backups", "logs"):
+                        continue
+                    zf.write(path, rel)
+    except Exception:
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
     fname = f"mojing-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
-    return StreamingResponse(
-        buf,
+    return FileResponse(
+        tmp_path,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        background=BackgroundTask(lambda: Path(tmp_path).unlink(missing_ok=True)),
     )
 
 
@@ -317,7 +327,19 @@ def _extract_import_zip(zip_path: Path, data_dir: Path) -> Path:
                 )
         if total > _IMPORT_MAX_UNCOMPRESSED:
             raise HTTPException(status_code=400, detail="备份解压后超过 2GB，已拒绝")
-        target = data_dir.parent / f"墨境数据-imported-{int(time.time())}"
+        # 优化审查 5.3：拒绝符号链接/设备文件等非普通条目（extractall 不会
+        # 还原链接目标，但伪装的链接元数据不该被信任）；mode 高 4 位为
+        # 0 的条目（未记录 unix 属性）按普通文件放行。
+        for info in infos:
+            mode = (info.external_attr >> 16) & 0xF000
+            if mode not in (0x8000, 0x4000, 0):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"「{info.filename}」不是普通文件（符号链接或设备文件），已拒绝",
+                )
+        # 优化审查 5.3：UUID 命名取代 int(time.time())——同一秒内两次导入不再冲突。
+        import uuid as _uuid
+        target = data_dir.parent / f"墨境数据-imported-{_uuid.uuid4().hex[:8]}"
         target.mkdir(parents=True, exist_ok=True)
         zf.extractall(target)
     if not (target / "mojing.db").exists():

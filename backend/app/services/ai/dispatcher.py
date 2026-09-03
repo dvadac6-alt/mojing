@@ -47,7 +47,7 @@ async def stream(
 ) -> AsyncIterator[str]:
     provider = provider_for(config)
     temperature = float(config.temperature) if config else 0.85
-    max_tokens = int(config.max_tokens) if config else 1200
+    max_tokens = int(config.max_tokens) if config else 50000
     async for piece in provider.stream(messages, temperature=temperature, max_tokens=max_tokens):
         yield piece
 
@@ -63,7 +63,7 @@ async def stream_with_usage(
     text has been produced, so a half-finished stream is never replayed."""
     provider = provider_for(config)
     temperature = float(config.temperature) if config else 0.85
-    max_tokens = int(config.max_tokens) if config else 1200
+    max_tokens = int(config.max_tokens) if config else 50000
     yield provider
     produced = False
     last_err: Exception | None = None

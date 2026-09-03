@@ -58,7 +58,7 @@ def import_env_config(database: Session) -> bool:
         cfg = AIConfig(
             provider=provider, name=name, model=model or "mock",
             base_url=base_url, api_key=encrypt_key(api_key),
-            temperature=0.85, max_tokens=1200, is_active=True,
+            temperature=0.85, max_tokens=50000, is_active=True,
         )
         database.add(cfg)
     database.commit()

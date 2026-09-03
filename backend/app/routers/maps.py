@@ -17,7 +17,7 @@ from ..schemas import (
     StrokeCreate, StrokeResponse,
     TerrainCreate, TerrainResponse, TerrainUpdate,
 )
-from .helpers import _get_novel, _story_map, _stroke, _terrain
+from .helpers import _get_novel, _story_map, _stroke, _terrain, sniff_image_ext
 
 router = APIRouter()
 
@@ -115,11 +115,21 @@ def create_stroke(map_id: str, payload: StrokeCreate, database: Session = Depend
     if not database.get(StoryMap, map_id):
         raise HTTPException(status_code=404, detail="Map not found")
     # seq = current max + 1, so order is stable without a timestamp tiebreak.
-    next_seq = (database.scalar(
-        select(func.max(MapStroke.seq)).where(MapStroke.map_id == map_id)) or 0) + 1
-    stroke = MapStroke(map_id=map_id, seq=next_seq, **payload.model_dump())
-    database.add(stroke)
-    database.commit()
+    # 优化审查 4.2：(map_id, seq) 唯一索引兜住并发竞态——撞上时重读 max 重试。
+    from sqlalchemy.exc import IntegrityError
+    stroke = None
+    for attempt in range(3):
+        next_seq = (database.scalar(
+            select(func.max(MapStroke.seq)).where(MapStroke.map_id == map_id)) or 0) + 1
+        stroke = MapStroke(map_id=map_id, seq=next_seq, **payload.model_dump())
+        database.add(stroke)
+        try:
+            database.commit()
+            break
+        except IntegrityError:
+            database.rollback()
+            if attempt == 2:
+                raise HTTPException(status_code=409, detail="笔画保存冲突，请重试")
     database.refresh(stroke)
     return _stroke(stroke)
 
@@ -223,6 +233,14 @@ async def upload_map_background(map_id: str, request: Request, database: Session
     # A few MB is plenty for a map background; reject anything absurd.
     if len(body) > 12 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="图片过大（>12MB），请压缩后上传")
+    # 优化审查 5.2：同封面上传——magic bytes 验真实格式，扩展名以真实格式为准。
+    sniffed = sniff_image_ext(body)
+    if not sniffed or f".{sniffed}" not in _ALLOWED_BG_TYPES.values():
+        raise HTTPException(
+            status_code=400,
+            detail="文件内容不是有效的图片（PNG/JPG/WebP/GIF），可能已损坏或伪装",
+        )
+    ext = f".{sniffed}"
     filename = f"{map_id}{ext}"
     (_background_dir() / filename).write_bytes(body)
     # Remove a previous file with a different extension (e.g. png → jpg swap).

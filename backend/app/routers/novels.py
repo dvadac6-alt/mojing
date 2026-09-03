@@ -21,7 +21,7 @@ from ..schemas import (
     ExportRequest, NovelCreate, NovelResponse, NovelUpdate, WorkspaceCounts, WorkspaceResponse,
 )
 from .helpers import (
-    _as_local_date, _chapter_summary, _get_novel, _novel,
+    _as_local_date, _chapter_summary, _get_novel, _novel, sniff_image_ext,
 )
 
 logger = logging.getLogger(__name__)
@@ -213,6 +213,15 @@ async def upload_novel_cover(novel_id: str, request: Request, database: Session 
         raise HTTPException(status_code=400, detail="未收到图片内容")
     if len(body) > 12 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="图片过大（>12MB），请压缩后上传")
+    # 优化审查 5.2：Content-Type 可伪造，按 magic bytes 验真实格式；扩展名
+    # 以真实格式为准（声称 png 实为 jpg 的文件按 jpg 落盘）。
+    sniffed = sniff_image_ext(body)
+    if not sniffed or f".{sniffed}" not in _COVER_TYPES.values():
+        raise HTTPException(
+            status_code=400,
+            detail="文件内容不是有效的图片（PNG/JPG/WebP/GIF），可能已损坏或伪装",
+        )
+    ext = f".{sniffed}"
     filename = f"{novel_id}{ext}"
     (_cover_dir() / filename).write_bytes(body)
     # Remove a previous file with a different extension (e.g. png → jpg swap).
@@ -334,22 +343,31 @@ def novel_activity(novel_id: str, days: int = Query(119, ge=14, le=366), databas
 
 # ---------------------------------------------------------------- search & export
 @router.get("/novels/{novel_id}/search")
-def search_novel(novel_id: str, q: str = Query(min_length=1), database: Session = Depends(get_db)):
+def search_novel(novel_id: str, q: str = Query(min_length=1, max_length=80),
+                 limit: int = Query(50, ge=1, le=200),
+                 database: Session = Depends(get_db)):
     """混合检索（RAG设计方案.md §六）：向量召回(0.7) + LIKE 召回(0.3) 融合排序，
-    结果带 snippet。未启用 embedding 时完全回退原有 LIKE 行为。"""
+    结果带 snippet。未启用 embedding 时完全回退原有 LIKE 行为。
+    优化审查 3.1：LIKE 命中先只取元数据（load_only + limit），正文 snippet
+    再按命中 id 二次取回——整本正文不再进内存，响应条数有硬上限。"""
     _get_novel(database, novel_id)
     keyword = f"%{q}%"
     chapters = database.scalars(
-        select(Chapter).where(Chapter.novel_id == novel_id,
-                              (Chapter.title.like(keyword)) | (Chapter.content.like(keyword)))
+        select(Chapter).options(load_only(
+            Chapter.id, Chapter.title, Chapter.order, Chapter.word_count))
+        .where(Chapter.novel_id == novel_id,
+               (Chapter.title.like(keyword)) | (Chapter.content.like(keyword)))
+        .limit(limit)
     ).all()
     characters = database.scalars(
         select(Character).where(Character.novel_id == novel_id,
                                 (Character.name.like(keyword)) | (Character.description.like(keyword)))
+        .limit(limit)
     ).all()
     threads = database.scalars(
         select(PlotThread).where(PlotThread.novel_id == novel_id,
                                  (PlotThread.title.like(keyword)) | (PlotThread.description.like(keyword)))
+        .limit(limit)
     ).all()
 
     def like_snippet(content: str) -> str:
@@ -358,9 +376,17 @@ def search_novel(novel_id: str, q: str = Query(min_length=1), database: Session 
             return content[:60]
         return "…" + content[max(0, pos - 25):pos + 40].replace(chr(10), " ") + "…"
 
+    # 正文只按命中 id 取回（≤ limit 行），避免整本 ORM 正文加载。
+    content_by_id: dict[str, str] = {}
+    if chapters:
+        for cid, content in database.execute(
+            select(Chapter.id, Chapter.content).where(Chapter.id.in_([c.id for c in chapters]))
+        ).all():
+            content_by_id[cid] = content or ""
+
     chapter_items = [{
         "id": c.id, "title": c.title, "order": c.order, "word_count": c.word_count,
-        "snippet": like_snippet(c.content or ""), "score": 0.3, "semantic": False,
+        "snippet": like_snippet(content_by_id.get(c.id, "")), "score": 0.3, "semantic": False,
     } for c in chapters]
 
     # ── 语义召回：命中"同义但无关键词"的章节 ──

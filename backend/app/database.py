@@ -240,6 +240,7 @@ def init_db() -> None:
     _migrate_legacy_db(DATABASE_PATH)
     Base.metadata.create_all(bind=engine)
     _migrate_legacy_columns()
+    _migrate_map_stroke_seq_unique()
     _migrate_doodles_to_strokes()
     _ensure_indexes()
     # (#2) Snapshot the DB on every launch — guards against file-level loss
@@ -265,7 +266,11 @@ _INDEXES = (
     ("ix_terrains_map_id", "terrains", "map_id"),
     ("ix_map_strokes_map_seq", "map_strokes", "map_id, seq"),
     ("ix_map_strokes_map_color", "map_strokes", "map_id, color"),
+    # 优化审查 4.3：RAG 删除/检索路径与跨作品用量统计的复合索引。
+    ("ix_document_chunks_source", "document_chunks", "source_type, source_id"),
+    ("ix_document_chunks_retrieval", "document_chunks", "novel_id, source_type, embedding_model"),
     ("ix_ai_usage_novel_created", "ai_usage", "novel_id, created_at"),
+    ("ix_ai_usage_created", "ai_usage", "created_at"),
     ("ix_character_appearances_novel", "character_appearances", "novel_id"),
     ("ix_character_appearances_chapter", "character_appearances", "chapter_id"),
     ("ix_ideas_novel_status", "ideas", "novel_id, status"),
@@ -356,6 +361,8 @@ def _migrate_legacy_columns() -> None:
             ("embed_model", "VARCHAR(120) DEFAULT '' NOT NULL"),
             ("embed_api_key", "VARCHAR(255) DEFAULT '' NOT NULL"),
         ],
+        # 使用统计页：输入缓存命中拆分（历史行为 0 = 未报告/未命中）
+        "ai_usage": [("cached_tokens", "INTEGER DEFAULT 0 NOT NULL")],
         "locations": [("map_id", "VARCHAR(36) REFERENCES story_maps(id) ON DELETE SET NULL")],
         "story_maps": [("background_image", "VARCHAR(255) DEFAULT '' NOT NULL")],
         "map_strokes": [("shape", "VARCHAR(20) DEFAULT 'path' NOT NULL")],
@@ -367,6 +374,36 @@ def _migrate_legacy_columns() -> None:
                 if name not in existing:
                     conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
         conn.commit()
+
+
+def _migrate_map_stroke_seq_unique() -> None:
+    """优化审查 4.2：为 (map_id, seq) 补唯一索引。历史竞态可能留下重复序号——
+    受影响的地图按行 id 顺序重编号（保持笔画相对次序），再建索引。幂等。"""
+    with engine.begin() as conn:
+        tables = {
+            row[0] for row in conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if "map_strokes" not in tables:
+            return
+        dupes = conn.exec_driver_sql(
+            "SELECT DISTINCT map_id FROM map_strokes "
+            "GROUP BY map_id, seq HAVING COUNT(*) > 1"
+        ).fetchall()
+        for (map_id,) in dupes:
+            # seq = 同图内 id 不大于本行的行数（1..n，按插入顺序稳定重编号）。
+            conn.exec_driver_sql(
+                "UPDATE map_strokes SET seq = ("
+                "  SELECT COUNT(*) FROM map_strokes AS s2"
+                "  WHERE s2.map_id = map_strokes.map_id AND s2.id <= map_strokes.id"
+                ") WHERE map_id = :mid",
+                {"mid": map_id},
+            )
+        conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_map_strokes_map_seq"
+            " ON map_strokes (map_id, seq)"
+        )
 
 
 def storage_info() -> dict:

@@ -159,7 +159,19 @@ async function trySpawn(port) {
     backendProcess.on('exit', code => console.log(`[Mojing API] exited with ${code}`))
     // Wait for *our* health on this port; if another process answered the
     // earlier probe it will fail the fingerprint check and we move on.
-    waitForBackend(port, 30).then(() => resolve(true)).catch(() => resolve(false))
+    waitForBackend(port, 30).then(() => resolve(true)).catch(() => {
+      // 优化审查 6.3：健康检查失败必须终止本次拉起的子进程——否则换端口
+      // 重试时旧的孤儿后端会一直堆积，占用端口和内存。
+      const child = backendProcess
+      if (child && child.exitCode === null) {
+        try { child.kill() } catch { /* already dying */ }
+        child.once('exit', () => resolve(false))
+        // 兜底：进程拒绝退出时也不能永远卡住本次尝试。
+        setTimeout(() => resolve(false), 2000)
+      } else {
+        resolve(false)
+      }
+    })
   })
 }
 

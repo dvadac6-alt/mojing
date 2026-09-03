@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Bot, BrainCircuit, Check, ChevronLeft, ChevronRight, Database, Dices, Feather,
+  BookOpen, Bot, BrainCircuit, Check, ChevronLeft, ChevronRight, Database, Dices, Feather,
   GripVertical, History, Maximize2, Minimize2, MessagesSquare, PanelRightClose, Plus,
   Save, ScrollText, ShieldCheck, Sparkles, Square, Trash2, WandSparkles, X,
 } from 'lucide-react'
@@ -721,6 +721,18 @@ const QuickAI = memo(function QuickAI({ workspace, chapter, direction, onAccept 
   const accept = () => { if (output.trim()) { onAccept(output.trim()); setOutput('') } }
   const selectCls = 'form-select'
 
+  // 「按简介创作第一章」冷启动：作品简介已由后端 prompt_builder 注入系统
+  // 提示词，这里只需装填明确的开篇指令与生成参数；简介为空则先引导填写。
+  const applyFirstChapter = () => {
+    if (!workspace.novel.description?.trim()) {
+      toast.error('请先在「作品设置」中填写作品简介，AI 才能据此开篇')
+      return
+    }
+    setInstruction('请根据作品简介开始创作第一章：从故事开端切入，交代核心悬念，引出主角，并以一个钩子收尾。这是全书第一章，之前没有任何正文，不要提及「前文」或尚未登场的人物。')
+    setMode('continue')
+    setTarget('1200')
+  }
+
   // Ctrl/Cmd+Enter → generate (the button already shows a ⌘↵ hint; wire it up
   // for real so the keyboard shortcut the UI promises actually works).
   const phaseRef = useRef(phase); phaseRef.current = phase
@@ -740,6 +752,9 @@ const QuickAI = memo(function QuickAI({ workspace, chapter, direction, onAccept 
     {direction && <div className="dir-hint" title={direction}><WandSparkles size={12} />已选续写方向：{direction.split('：')[0]}</div>}
     <div className="assist-intro"><span><WandSparkles size={18} /></span><div><strong>接下来想怎么写？</strong><p>结合当前章节和作品资料生成草稿。</p></div></div>
     <TemplateChips templates={templates} onApply={content => setInstruction(content)} onManage={() => setTplOpen(true)} />
+    <div className="tpl-row">
+      <button className="tpl-chip first-chapter" title="用作品简介生成第一章开篇草稿" onClick={applyFirstChapter}><BookOpen size={11} />按简介创作第一章</button>
+    </div>
     <label>写作要求</label>
     <div className="prompt"><textarea value={instruction} maxLength={500} onChange={e => setInstruction(e.target.value)} /><footer><span>{instruction.length} / 500</span></footer></div>
     <ModelSelect value={modelId} onChange={setModelId} />

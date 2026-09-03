@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { Feather, FilePlus2, ImagePlus, Import, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react'
-import { workspaceApi, type Novel } from '../workspaceApi'
+import { useEffect, useRef, useState } from 'react'
+import { Feather, FilePlus2, ImagePlus, Import, Pencil, Plus, ShieldCheck, Sparkles, Trash2, WandSparkles } from 'lucide-react'
+import { runAIStream, workspaceApi, type Novel } from '../workspaceApi'
 import { COVER_TONES, fmt } from '../lib/constants'
 import { Button, Field, FormFooter, Modal, PageHeader, Scroll, SearchBox } from '../components/ui'
 import { inputCls, areaCls } from '../lib/constants'
@@ -85,6 +85,26 @@ function NovelForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved
   const [author, setAuthor] = useState(initial?.author ?? '')
   const [target, setTarget] = useState(String(initial?.target_words ?? 200000))
   const [desc, setDesc] = useState(initial?.description ?? '')
+  // ── AI 帮写简介：书名/类型直接取表单当前值，提示词 + 流式生成直填简介框。──
+  const [hints, setHints] = useState('')
+  const [aiOpen, setAiOpen] = useState(false)
+  const [aiPhase, setAiPhase] = useState<'idle' | 'streaming'>('idle')
+  const [aiError, setAiError] = useState('')
+  const aiAbort = useRef<AbortController | null>(null)
+  const genSynopsis = async () => {
+    setAiError(''); setDesc(''); setAiPhase('streaming')
+    const controller = new AbortController(); aiAbort.current = controller
+    try {
+      await runAIStream('/ai/synopsis', { title, genre, hints }, {
+        signal: controller.signal,
+        onChunk: text => setDesc(prev => prev + text),
+      })
+    } catch (e) {
+      // 用户主动停止不算失败；清掉半截结果让简介框回到干净状态。
+      if (e instanceof DOMException && e.name === 'AbortError') setDesc('')
+      else setAiError(e instanceof Error ? e.message : '生成失败')
+    } finally { setAiPhase('idle'); aiAbort.current = null }
+  }
   // 封面：coverFile = 本次新选的文件（提交时上传）；coverRemoved = 要求清除现有封面。
   const [coverFile, setCoverFile] = useState<File | null>(null)
   const [coverRemoved, setCoverRemoved] = useState(false)
@@ -139,7 +159,26 @@ function NovelForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved
         <Field label="作者笔名"><input className={inputCls} value={author} onChange={e => setAuthor(e.target.value)} /></Field>
       </div>
       <Field label="目标字数"><input className={inputCls} type="number" value={target} onChange={e => setTarget(e.target.value)} /></Field>
-      <Field label="简介"><textarea className={areaCls} value={desc} onChange={e => setDesc(e.target.value)} placeholder="一句话概括这部作品" /></Field>
+      <Field label="简介">
+        <textarea className={areaCls} value={desc} onChange={e => setDesc(e.target.value)} placeholder="一句话概括这部作品" />
+        <div className="synopsis-toolbar">
+          <button type="button" className={'ai-help-toggle' + (aiOpen ? ' on' : '')} onClick={() => setAiOpen(v => !v)}>
+            <WandSparkles size={13} />{aiOpen ? '收起 AI 帮写' : 'AI 帮写'}
+          </button>
+        </div>
+        {aiOpen && <div className="ai-synopsis-box">
+          <p className="ai-synopsis-note">根据上方「书名」「流派」与下面的提示词生成，结果直接填入简介框，可继续修改。</p>
+          <textarea className={areaCls} rows={2} value={hints} onChange={e => setHints(e.target.value)}
+            placeholder="例如：克苏鲁风侦探故事，主角是失忆的法医，双时间线叙事，结局反转…" />
+          <div className="ai-synopsis-actions">
+            {aiPhase === 'idle'
+              ? <Button kind="primary" onClick={genSynopsis} disabled={!hints.trim() && !title.trim()}><Sparkles size={13} />生成简介</Button>
+              : <><span className="ai-synopsis-live">生成中 · 已 {desc.length} 字</span>
+                  <Button onClick={() => aiAbort.current?.abort()}>停止</Button></>}
+          </div>
+          {aiError && <div className="form-error">{aiError}</div>}
+        </div>}
+      </Field>
     </div>
   </Modal>
 }

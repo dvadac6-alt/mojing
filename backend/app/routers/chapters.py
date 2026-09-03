@@ -256,8 +256,12 @@ def get_recap(novel_id: str, before_chapter_id: str | None = None,
     from ..services.recap import RecapEntry, build_recap
 
     _get_novel(database, novel_id)
+    # 优化审查 3.2：与 ai.py 的 _build_recap_for 同一策略——元数据列只读
+    # load_only（不携带全部正文），结尾段仅对最近两章按 id 单独取回。
     chapters = database.scalars(
-        select(Chapter).where(Chapter.novel_id == novel_id).order_by(Chapter.order)
+        select(Chapter).options(load_only(
+            Chapter.id, Chapter.order, Chapter.title, Chapter.summary))
+        .where(Chapter.novel_id == novel_id).order_by(Chapter.order)
     ).all()
     before_order: int | None = None
     if before_chapter_id:
@@ -266,10 +270,16 @@ def get_recap(novel_id: str, before_chapter_id: str | None = None,
             before_order = current.order
     prior = [c for c in chapters if before_order is None or c.order < before_order]
     recent_ids = {c.id for c in prior[-2:]}
+    tails: dict[str, str] = {}
+    if recent_ids:
+        for cid, content in database.execute(
+            select(Chapter.id, Chapter.content).where(Chapter.id.in_(recent_ids))
+        ).all():
+            tails[cid] = (content or "")[-400:]
     entries = [
         RecapEntry(
             order=c.order, title=c.title, summary=c.summary or "",
-            tail=(c.content or "")[-400:] if c.id in recent_ids else "",
+            tail=tails.get(c.id, ""),
         )
         for c in prior
     ]

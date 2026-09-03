@@ -39,3 +39,6 @@ src/api-types.ts
 # Local UI screenshots / audit working dirs (curated copies live in docs/screenshots/)
 /ui-*.png
 ui-audit-shots/
+
+# Clean project export for sharing (git archive output) — a full copy of the repo
+mojing/

@@ -1,5 +1,5 @@
 {
-  "name": "inkforge-windows-ui",
+  "name": "mojing",
   "description": "墨境 Windows 本地优先 AI 小说创作工具",
   "private": true,
   "version": "0.1.0",
@@ -82,7 +82,7 @@
     "publish": {
       "provider": "github",
       "owner": "dvadac6-alt",
-      "repo": "AI-write"
+      "repo": "mojing"
     }
   }
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ElementType, type ReactNode } from 'react'
 import {
-  BarChart3, Bot, Check, CircleHelp, Database, Download, HardDrive, MapPin, PenLine, Plus, RefreshCw, Settings, ShieldCheck, Trash2, Upload,
+  BarChart3, Bot, Check, CircleHelp, Database, Download, HardDrive, MapPin, Moon, PenLine, Plus, RefreshCw, Settings, ShieldCheck, Sun, Trash2, Upload,
 } from 'lucide-react'
 import {
   chooseDataDirectory, workspaceApi,
@@ -85,7 +85,7 @@ function GeneralSection() {
 
 /** 编辑器设置：字号 / 主题 / 自动保存间隔 / 专注目标。 */
 function EditorSection() {
-  const { theme, toggleTheme } = useTheme()
+  const { theme, setTheme } = useTheme()
   const [font, setFont] = useState(readEditorFont)
   const [autosave, setAutosave] = useState(readAutosaveMs)
   const [goal, setGoal] = useState(readFocusGoal)
@@ -106,8 +106,11 @@ function EditorSection() {
               ))}
             </div>
           </PrefRow>
-          <PrefRow label="界面主题" hint={`当前${theme === 'dark' ? '夜间' : '白天'}，与标题栏切换按钮同步`}>
-            <button className={'toggle ' + (theme === 'dark' ? 'on' : '')} onClick={toggleTheme} aria-label="切换昼夜主题"><i /></button>
+          <PrefRow label="界面主题" hint="与标题栏切换按钮实时同步">
+            <div className="theme-switch" role="group" aria-label="切换昼夜主题">
+              <button className={theme === 'light' ? 'on' : ''} onClick={() => setTheme('light')}><Sun size={13} /><span>白天</span></button>
+              <button className={theme === 'dark' ? 'on' : ''} onClick={() => setTheme('dark')}><Moon size={13} /><span>夜间</span></button>
+            </div>
           </PrefRow>
           <PrefRow label="自动保存间隔" hint="停稿后多久落盘；切换章节或关窗时立即补存">
             <div className="pref-segments" role="group" aria-label="自动保存间隔">

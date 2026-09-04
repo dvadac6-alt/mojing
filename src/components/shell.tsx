@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ElementType } from 'react'
 import {
   BookOpen, Check, ChevronDown, ChevronRight, CloudOff, Command,
-  Feather, HardDrive, LibraryBig, Lightbulb, Minimize2, Moon, PanelLeftClose, PenLine,
+  HardDrive, LibraryBig, Lightbulb, Minimize2, Moon, PanelLeftClose, PenLine,
   Plus, Search, Settings, Square, Sun, BrainCircuit, Users, Globe2, X,
 } from 'lucide-react'
 import type { Nav, Page } from '../lib/constants'
@@ -20,7 +20,7 @@ export function TitleBar({ onCommand, novel, theme, onToggleTheme }: { onCommand
     return () => { unsub?.() }
   }, [])
   return <header className="titlebar">
-    <span className="brand-icon"><Feather size={15} /></span><strong className="brand-name">墨境</strong>
+    <span className="seal-mark" aria-hidden="true">墨</span><strong className="brand-name">墨境</strong>
     <button className="title-search" onClick={onCommand}><Search size={13} /><span>搜索作品、章节或命令</span><kbd>Ctrl K</kbd></button>
     <span className="title-context"><i />《{novel?.title ?? '未命名作品'}》</span>
     <button className="theme-toggle" onClick={onToggleTheme} title={theme === 'dark' ? '切换到白天模式' : '切换到夜间模式'} aria-label="切换昼夜主题">
@@ -78,7 +78,7 @@ function BookSwitcher({ novel, novels, collapsed, onSwitch, onManageBooks }: { n
 
   return <div className="book-switch-wrap" ref={wrapRef}>
     <button className={'book-switch' + (open ? ' open' : '')} onClick={() => setOpen(o => !o)} title={collapsed ? novel.title : ''}>
-      <b>{novel.title.slice(0, 1)}</b>
+      <b>{novel.title.slice(0, 2)}</b>
       {!collapsed && <>
         <span><strong>{novel.title}</strong><small>{novel.genre || '未分类'} · {novel.status === 'completed' ? '已完结' : '连载中'}</small></span>
         <i className={'switch-chev' + (open ? ' flipped' : '')}><ChevronDown size={14} /></i>

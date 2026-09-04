@@ -9,12 +9,14 @@ import {
   type ChapterSummary, type ChapterVersion, type LintIssue, type Workspace,
 } from '../workspaceApi'
 import type { Page } from '../lib/constants'
+import { toCnNum } from '../lib/cnNum'
 import {
   EDITOR_FONT_STEPS, fmt, readAutosaveMs, readEditorFont, readFocusGoal, writeEditorFont, writeFocusGoal,
 } from '../lib/constants'
 import { confirmDialog } from '../components/Confirm'
 import { toast } from '../components/Toast'
 import { indentParagraphs } from '../lib/textFormat'
+import { buildReviewDiff } from '../lib/diff'
 import { Button, EmptyState, Field, Modal, SearchBox } from '../components/ui'
 import { ModelSelect } from '../components/ModelSelect'
 import { TemplateChips, TemplateManagerModal, usePromptTemplates } from '../components/PromptTemplates'
@@ -197,6 +199,27 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
   type Highlight = { start: number; end: number; type: 'add' | 'del' }
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; insertPos: number; selStart: number; selEnd: number } | null>(null)
   const [highlights, setHighlights] = useState<Highlight[]>([])
+  // ── AI 改写审阅（代码审查式差异标记）──
+  // 改写流结束后：merged 文本（红删保留原位 + 绿增）进入正文，进入审阅态。
+  // 审阅期间编辑器只读、自动保存挂起；采纳=去掉红删段，保留原文=还原选区。
+  type ReviewState = { start: number; end: number; orig: string; finalText: string }
+  const [review, setReview] = useState<ReviewState | null>(null)
+  const reviewRef = useRef<ReviewState | null>(null)
+  const setReviewBoth = useCallback((r: ReviewState | null) => { reviewRef.current = r; setReview(r) }, [])
+  const acceptReview = useCallback(() => {
+    const r = reviewRef.current
+    if (!r) return
+    setDraft(d => d.slice(0, r.start) + r.finalText + d.slice(r.end))
+    setHighlights([])
+    setReviewBoth(null)
+  }, [setReviewBoth])
+  const cancelReview = useCallback(() => {
+    const r = reviewRef.current
+    if (!r) return
+    setDraft(d => d.slice(0, r.start) + r.orig + d.slice(r.end))
+    setHighlights([])
+    setReviewBoth(null)
+  }, [setReviewBoth])
   const [aiPhase, setAiPhase] = useState<'idle' | 'connecting' | 'streaming'>('idle')
   const [aiError, setAiError] = useState('')
   const aiAbort = useRef<AbortController | null>(null)
@@ -206,6 +229,8 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
 
   const onContextMenu = (e: React.MouseEvent<HTMLTextAreaElement>) => {
     e.preventDefault()
+    // 审阅态下偏移量正在被 diff 标记占用，不允许再发起内联 AI。
+    if (reviewRef.current) return
     const ta = e.currentTarget
     setCtxMenu({ x: e.clientX, y: e.clientY, insertPos: ta.selectionStart, selStart: ta.selectionStart, selEnd: ta.selectionEnd })
   }
@@ -234,6 +259,22 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
     // aiEnd 追踪 AI 内容在 draft 中的当前末尾位置。
     // 每个 chunk 只追加 delta（新增的字），绝不重写已有内容——否则会指数级重复。
     let aiEnd = writeStart
+    // 改写场景单独累积 AI 输出全文：流结束后与原文做 diff，进入审阅态。
+    let aiText = ''
+    // 把（可能是部分的）AI 改写转成代码审查式审阅：绿=新增 / 红=删除（原位保留）。
+    const enterReview = () => {
+      if (!aiText) { restoreOriginal(); return }
+      const { merged, marks, clean } = buildReviewDiff(contextBefore, aiText)
+      setDraft(d => d.slice(0, writeStart) + merged + d.slice(writeStart + aiText.length))
+      setHighlights(marks.map(m => ({ start: writeStart + m.start, end: writeStart + m.end, type: m.type })))
+      setReviewBoth({ start: writeStart, end: writeStart + merged.length, orig: contextBefore, finalText: clean })
+    }
+    // 生成失败/无内容时把删掉的选区原文放回去，正文回到生成前状态。
+    const restoreOriginal = () => {
+      setDraft(d => d.slice(0, writeStart) + contextBefore + d.slice(writeStart))
+      setHighlights([])
+      setReviewBoth(null)
+    }
     try {
       await runAIStream('/ai/generate', {
         novel_id: workspace.novel.id, chapter_id: activeChapter?.id, instruction,
@@ -245,17 +286,28 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
           const insertAt = aiEnd
           setDraft(d => d.slice(0, insertAt) + delta + d.slice(insertAt))
           aiEnd += delta.length
+          aiText += delta
           setHighlights([{ start: writeStart, end: aiEnd, type: 'add' }])
           setAiPhase('streaming')
         },
       })
       setAiPhase('idle')
+      // 改写完成（正常结束）：全文 diff 进入审阅态。
+      if (hasSelection) enterReview()
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') {
-        setHighlights([])
+      const aborted = (e as Error).name === 'AbortError'
+      if (!aborted) {
         // runAIStream surfaces the real upstream reason (429 / 401 / timeout);
         // show it instead of failing silently so the user knows *why*.
         setAiError((e as Error).message || 'AI 生成失败')
+      }
+      // 改写被手动停止：已生成的部分照样进入审阅（半截改写也可能有用）；
+      // 失败则还原原文。纯续写（无选区）维持旧行为——已有内容保持绿标。
+      if (hasSelection) {
+        if (aborted && aiText) enterReview()
+        else restoreOriginal()
+      } else if (!aborted) {
+        setHighlights([])
       }
       setAiPhase('idle')
     } finally { aiAbort.current = null }
@@ -389,6 +441,16 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
 
   const persistChapter = useCallback(async (chapterId = activeId, title = draftTitle, content = draft) => {
     if (!chapterId) return null
+    // 审阅态下保存：自动落定为采纳版（红删段去除），绝不把带删除标记的
+    // 中间态写进数据库；编辑器同步回到干净文本。
+    const r = reviewRef.current
+    if (r) {
+      const resolved = content.slice(0, r.start) + r.finalText + content.slice(r.end)
+      setReviewBoth(null)
+      setHighlights([])
+      setDraft(resolved)
+      content = resolved
+    }
     const normalizedTitle = title.trim() || '未命名章节'
     setSaveState('saving')
     try {
@@ -436,7 +498,9 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
   }, [persistChapter])
 
   useEffect(() => {
-    if (!activeChapter || !dirty) return
+    // 审阅未决时挂起自动保存（防抖定时器不启动），由用户在工具条上裁决；
+    // 手动 ⌘S / 切章 / 关窗兜底路径会自动落定为采纳版。
+    if (!activeChapter || !dirty || reviewRef.current) return
     setSaveState('saving')
     // 防抖间隔可调（设置页 → 编辑器 → 自动保存间隔）；每次防抖重读，改完即生效。
     const timer = window.setTimeout(() => { void persistChapter() }, readAutosaveMs())
@@ -450,7 +514,14 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
   const pendingStateRef = useRef({ id: '', title: '', content: '' })
   pendingStateRef.current = { id: activeId, title: draftTitle, content: draft }
   const flushPendingSave = useCallback((keepalive: boolean) => {
-    const { id, title, content } = pendingStateRef.current
+    const { id, title } = pendingStateRef.current
+    let content = pendingStateRef.current.content
+    // 关窗/切页兜底同样不能把审阅中间态写库：直接落定采纳版。
+    const r = reviewRef.current
+    if (r) {
+      content = content.slice(0, r.start) + r.finalText + content.slice(r.end)
+      reviewRef.current = null
+    }
     if (!id || (title === savedSignature.current.title && content === savedSignature.current.content)) return
     void workspaceApi.updateChapter(id, {
       title: title.trim() || '未命名章节',
@@ -549,7 +620,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
 
   return <div className={'writing-page' + (focusOpen ? ' focus' : '')}>
     <aside className="chapters-pane"><div className="pane-title"><div><label>{workspace.novel.title}</label><strong>章节目录</strong></div><button onClick={createChapter}><Plus size={16} /></button></div><SearchBox text="搜索章节" value={chapterQuery} onChange={setChapterQuery} />
-      <div className="chapter-list">{visibleChapters.map(chapter => <button className={chapter.id === activeId ? 'active' : ''} key={chapter.id} onClick={() => void selectChapter(chapter)}><GripVertical size={13} /><b>{String(chapter.order).padStart(2, '0')}</b><span><strong>{chapter.title}</strong><small>{fmt(chapter.word_count)} 字</small></span>{chapter.status === 'completed' && <Check size={12} />}</button>)}{query && visibleChapters.length === 0 && <p className="chapter-search-empty">没有匹配「{query}」的章节</p>}</div>
+      <div className="chapter-list">{visibleChapters.map(chapter => <button className={chapter.id === activeId ? 'active' : ''} key={chapter.id} onClick={() => void selectChapter(chapter)}><GripVertical size={13} /><b>{toCnNum(chapter.order)}</b><span><strong>{chapter.title}</strong><small>{fmt(chapter.word_count)} 字</small></span>{chapter.status === 'completed' && <Check size={12} />}</button>)}{query && visibleChapters.length === 0 && <p className="chapter-search-empty">没有匹配「{query}」的章节</p>}</div>
       <button className="new-chapter" onClick={createChapter}><Plus size={14} />新建章节</button>
     </aside>
     <section className="editor">
@@ -575,13 +646,13 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
       <button className={'assist-toggle ' + (assistant ? 'active' : '')} onClick={onAssistant}><WandSparkles size={14} />辅助中心</button>
     </div>
        <div className="paper-wrap"><article ref={paperRef} className="paper editable-paper" style={{ '--ms-font': `${editorFont}px` } as React.CSSProperties}>
-         {currentPageIndex === 0 && <div className="page-heading"><label>第 {activeChapter.order} 章</label><input className="chapter-title-input" value={draftTitle} onChange={e => setDraftTitle(e.target.value)} aria-label="章节标题" /><div className="ornament"><i /><Feather size={14} /><i /></div></div>}
+         {currentPageIndex === 0 && <div className="page-heading"><label>第 {toCnNum(activeChapter.order)} 章</label><input className="chapter-title-input" value={draftTitle} onChange={e => setDraftTitle(e.target.value)} aria-label="章节标题" /><div className="ornament"><i /><Feather size={14} /><i /></div></div>}
          <div className="manuscript-stage">
            {/* 背景着色层：与 textarea 同步，渲染 AI 新增（绿）/删除（红）标记 */}
            <div className="manuscript-backdrop" aria-hidden="true">{renderBackdrop()}</div>
-           <textarea ref={manuscriptRef} className="manuscript-textarea" value={currentPage.text} onChange={e => { setHighlights([]); setDraft(current => current.slice(0, currentPage.start) + e.target.value + current.slice(currentPage.end)) }} onContextMenu={onContextMenu} aria-label={`章节正文第 ${currentPageIndex + 1} 页`} placeholder={loadingContent ? '正在读取本章内容…' : '从这里开始写作……（右键空白处可 AI 补写）'} spellCheck={false} disabled={loadingContent} />
+           <textarea ref={manuscriptRef} className="manuscript-textarea" value={currentPage.text} readOnly={!!review} onChange={e => { setHighlights([]); setDraft(current => current.slice(0, currentPage.start) + e.target.value + current.slice(currentPage.end)) }} onContextMenu={onContextMenu} aria-label={`章节正文第 ${currentPageIndex + 1} 页`} placeholder={loadingContent ? '正在读取本章内容…' : '从这里开始写作……（右键空白处可 AI 补写）'} spellCheck={false} disabled={loadingContent} />
          </div>
-         <div ref={headingMeasureRef} className="page-heading page-heading-measure" aria-hidden="true"><label>第 {activeChapter.order} 章</label><input className="chapter-title-input" value={draftTitle} readOnly tabIndex={-1} /><div className="ornament"><i /><Feather size={14} /><i /></div></div>
+         <div ref={headingMeasureRef} className="page-heading page-heading-measure" aria-hidden="true"><label>第 {toCnNum(activeChapter.order)} 章</label><input className="chapter-title-input" value={draftTitle} readOnly tabIndex={-1} /><div className="ornament"><i /><Feather size={14} /><i /></div></div>
        </article></div>
        {ctxMenu && (
          <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} onClick={e => e.stopPropagation()}>
@@ -592,6 +663,16 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
        )}
       {(aiPhase !== 'idle' || aiError) && (
         <InlineAIStatus phase={aiPhase} error={aiError} onStop={stopInlineAI} onDismiss={dismissAiError} />
+      )}
+      {review && (
+        <div className="ai-inline-status ai-review-bar">
+          <WandSparkles size={13} />
+          AI 改写完成，请审阅：
+          <span className="rev-chip add">绿色=新增</span>
+          <span className="rev-chip del">红色=删除</span>
+          <button className="accept" onClick={acceptReview}><Check size={12} />采纳改写</button>
+          <button className="reject" onClick={cancelReview}>保留原文</button>
+        </div>
       )}
        <nav className="page-navigation" aria-label="章节分页">
          <button onClick={() => setPageIndex(index => Math.max(0, index - 1))} disabled={currentPageIndex === 0}><ChevronLeft size={14} />上一页</button>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ElementType, type ReactNode } from 'react'
 import {
-  BarChart3, Bot, Check, CircleHelp, Database, Download, HardDrive, MapPin, Moon, PenLine, Plus, RefreshCw, Settings, ShieldCheck, Sun, Trash2, Upload,
+  BarChart3, Bot, Check, CircleHelp, Database, Download, HardDrive, MapPin, Moon, Palette, PenLine, Plus, RefreshCw, Settings, ShieldCheck, Sun, Trash2, Upload,
 } from 'lucide-react'
 import {
   chooseDataDirectory, workspaceApi,
@@ -18,7 +18,7 @@ import { confirmDialog } from '../components/Confirm'
 import { toast } from '../components/Toast'
 
 export function SettingsPage({ workspace, reload }: { workspace: Workspace; reload: () => Promise<void> }) {
-  const sections: [ElementType, string][] = [[Settings, '通用'], [PenLine, '编辑器'], [Bot, 'AI 模型'], [BarChart3, '使用统计'], [Download, '导出'], [HardDrive, '数据与备份'], [CircleHelp, '关于']]
+  const sections: [ElementType, string][] = [[Settings, '通用'], [Palette, '外观'], [Bot, 'AI 模型'], [BarChart3, '使用统计'], [Download, '导出'], [HardDrive, '数据与备份'], [CircleHelp, '关于']]
   const [active, setActive] = useState('AI 模型')
   return <div className="settings-page">
     <aside>
@@ -30,7 +30,7 @@ export function SettingsPage({ workspace, reload }: { workspace: Workspace; relo
       {active === '使用统计' && <UsageStatsSection />}
       {active === '导出' && <ExportSection workspace={workspace} />}
       {active === '通用' && <GeneralSection />}
-      {active === '编辑器' && <EditorSection />}
+      {active === '外观' && <AppearanceSection />}
       {active === '数据与备份' && <DataSection reload={reload} />}
       {active === '关于' && <AboutSection />}
     </section>
@@ -56,11 +56,15 @@ function PrefRow({ label, hint, children }: { label: string; hint?: string; chil
 /** 通用设置：跨作品的全局偏好（存于本机 localStorage，不上传）。 */
 function GeneralSection() {
   const [gap, setGap] = useState(readPresenceGap)
+  const [autosave, setAutosave] = useState(readAutosaveMs)
+  const [goal, setGoal] = useState(readFocusGoal)
   const changeGap = (delta: number) => {
     const next = Math.max(1, Math.min(99, gap + delta))
     setGap(next)
     writePresenceGap(next)
   }
+  const changeAutosave = (ms: number) => { setAutosave(ms); writeAutosaveMs(ms) }
+  const changeGoal = (delta: number) => { const next = Math.max(100, goal + delta); setGoal(next); writeFocusGoal(next) }
   return <Scroll>
     <div style={{ maxWidth: 'min(720px, 100%)', margin: '0 auto' }}>
       <PageHeader eyebrow="应用偏好" title="通用设置" desc="这些设置只保存在当前设备，不上传任何数据。" />
@@ -74,6 +78,24 @@ function GeneralSection() {
             </div>
           </PrefRow>
         </PrefCard>
+        <PrefCard title="保存与专注" desc="停稿落盘节奏，以及进入专注模式时的默认字数目标。">
+          <PrefRow label="自动保存间隔" hint="停稿后多久落盘；切换章节或关窗时立即补存">
+            <div className="pref-segments" role="group" aria-label="自动保存间隔">
+              {AUTOSAVE_MS_STEPS.map(ms => (
+                <button key={ms} className={autosave === ms ? 'active' : ''} onClick={() => changeAutosave(ms)}>
+                  {ms / 1000} 秒
+                </button>
+              ))}
+            </div>
+          </PrefRow>
+          <PrefRow label="专注目标" hint="写作页按 F4 进入专注模式后的本次默认字数目标">
+            <div className="pref-stepper" role="group" aria-label="专注目标字数">
+              <button onClick={() => changeGoal(-500)} aria-label="减少 500 字" disabled={goal <= 100}>－</button>
+              <span className="pref-value">{goal}<small>字</small></span>
+              <button onClick={() => changeGoal(500)} aria-label="增加 500 字">＋</button>
+            </div>
+          </PrefRow>
+        </PrefCard>
         <div className="pref-note">
           <ShieldCheck size={14} />
           所有作品数据保存在本地 SQLite（见「数据与备份」）；本页偏好仅写入浏览器 localStorage，不随作品迁移。
@@ -83,20 +105,16 @@ function GeneralSection() {
   </Scroll>
 }
 
-/** 编辑器设置：字号 / 主题 / 自动保存间隔 / 专注目标。 */
-function EditorSection() {
+/** 外观设置：界面主题与正文显示。 */
+function AppearanceSection() {
   const { theme, setTheme } = useTheme()
   const [font, setFont] = useState(readEditorFont)
-  const [autosave, setAutosave] = useState(readAutosaveMs)
-  const [goal, setGoal] = useState(readFocusGoal)
   const changeFont = (size: number) => { setFont(size); writeEditorFont(size) }
-  const changeAutosave = (ms: number) => { setAutosave(ms); writeAutosaveMs(ms) }
-  const changeGoal = (delta: number) => { const next = Math.max(100, goal + delta); setGoal(next); writeFocusGoal(next) }
   return <Scroll>
     <div style={{ maxWidth: 'min(720px, 100%)', margin: '0 auto' }}>
-      <PageHeader eyebrow="写作体验" title="编辑器设置" desc="调整正文显示与保存节奏，立即对写作页生效。" />
+      <PageHeader eyebrow="界面" title="外观设置" desc="主题与正文显示，改动立即生效。" />
       <div className="pref-list">
-        <PrefCard title="写作偏好" desc="已打开的写作页下次进入时刷新为最新设置。">
+        <PrefCard title="界面外观" desc="已打开的写作页下次进入时刷新为最新字号。">
           <PrefRow label="正文字号" hint="小 14 · 标准 15 · 大 17">
             <div className="pref-segments" role="group" aria-label="正文字号">
               {EDITOR_FONT_STEPS.map(size => (
@@ -110,22 +128,6 @@ function EditorSection() {
             <div className="theme-switch" role="group" aria-label="切换昼夜主题">
               <button className={theme === 'light' ? 'on' : ''} onClick={() => setTheme('light')}><Sun size={13} /><span>白天</span></button>
               <button className={theme === 'dark' ? 'on' : ''} onClick={() => setTheme('dark')}><Moon size={13} /><span>夜间</span></button>
-            </div>
-          </PrefRow>
-          <PrefRow label="自动保存间隔" hint="停稿后多久落盘；切换章节或关窗时立即补存">
-            <div className="pref-segments" role="group" aria-label="自动保存间隔">
-              {AUTOSAVE_MS_STEPS.map(ms => (
-                <button key={ms} className={autosave === ms ? 'active' : ''} onClick={() => changeAutosave(ms)}>
-                  {ms / 1000} 秒
-                </button>
-              ))}
-            </div>
-          </PrefRow>
-          <PrefRow label="专注目标" hint="进入专注模式时的默认本次字数目标">
-            <div className="pref-stepper" role="group" aria-label="专注目标字数">
-              <button onClick={() => changeGoal(-500)} aria-label="减少 500 字" disabled={goal <= 100}>－</button>
-              <span className="pref-value">{goal}<small>字</small></span>
-              <button onClick={() => changeGoal(500)} aria-label="增加 500 字">＋</button>
             </div>
           </PrefRow>
         </PrefCard>

@@ -9,7 +9,7 @@ import type { Nav, Page } from '../lib/constants'
 import type { Novel } from '../workspaceApi'
 import { fmt } from '../lib/constants'
 
-export function TitleBar({ onCommand, novel, theme, onToggleTheme }: { onCommand: () => void; novel?: Novel; theme: 'light' | 'dark'; onToggleTheme: () => void }) {
+export function TitleBar({ onCommand, novel, theme, onSetTheme }: { onCommand: () => void; novel?: Novel; theme: 'light' | 'dark'; onSetTheme: (t: 'light' | 'dark') => void }) {
   const desktop = window.mojingDesktop
   const [maximized, setMaximized] = useState(false)
   useEffect(() => {
@@ -23,9 +23,10 @@ export function TitleBar({ onCommand, novel, theme, onToggleTheme }: { onCommand
     <span className="seal-mark" aria-hidden="true">墨</span><strong className="brand-name">墨境</strong>
     <button className="title-search" onClick={onCommand}><Search size={13} /><span>搜索作品、章节或命令</span><kbd>Ctrl K</kbd></button>
     <span className="title-context"><i />《{novel?.title ?? '未命名作品'}》</span>
-    <button className="theme-toggle" onClick={onToggleTheme} title={theme === 'dark' ? '切换到白天模式' : '切换到夜间模式'} aria-label="切换昼夜主题">
-      {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
-    </button>
+    <div className="theme-switch" role="group" aria-label="切换昼夜主题">
+      <button className={theme === 'light' ? 'on' : ''} onClick={() => onSetTheme('light')} title="白天模式"><Sun size={13} /><span>白天</span></button>
+      <button className={theme === 'dark' ? 'on' : ''} onClick={() => onSetTheme('dark')} title="夜间模式"><Moon size={13} /><span>夜间</span></button>
+    </div>
     <div className="window-actions">
       <button title="最小化" onClick={() => desktop?.windowMinimize?.()}><Minimize2 size={13} /></button>
       <button title={maximized ? '还原' : '最大化'} onClick={() => desktop?.windowToggleMaximize?.()}>

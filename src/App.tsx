@@ -26,7 +26,7 @@ const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ defa
 
 export default function App() {
   const { workspace, loadError, reload, patchWorkspace, switchNovel, retry } = useWorkspace()
-  const { theme, toggleTheme } = useTheme()
+  const { theme, setTheme } = useTheme()
   const [page, setPage] = useState<Page>('overview')
   const [collapsed, setCollapsed] = useState(false)
   const [assistant, setAssistant] = useState(true)
@@ -54,7 +54,7 @@ export default function App() {
 
   if (loadError || !workspace) return (
     <div className="desktop">
-      <TitleBar onCommand={() => setCommand(true)} theme={theme} onToggleTheme={toggleTheme} />
+      <TitleBar onCommand={() => setCommand(true)} theme={theme} onSetTheme={setTheme} />
       <div className="app-body">
         <main className="stage">
           <div className="writing-state">
@@ -105,7 +105,7 @@ export default function App() {
 
   return (
     <div className="desktop">
-      <TitleBar onCommand={() => setCommand(true)} novel={novel} theme={theme} onToggleTheme={toggleTheme} />
+      <TitleBar onCommand={() => setCommand(true)} novel={novel} theme={theme} onSetTheme={setTheme} />
       <div className="app-body">
         <Sidebar page={page} collapsed={collapsed} onPage={setPage} onCollapse={() => setCollapsed(!collapsed)}
           novel={novel} novels={novels} onSwitchNovel={openNovel} onManageBooks={() => setPage('projects')}

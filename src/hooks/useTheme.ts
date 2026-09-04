@@ -40,5 +40,13 @@ export function useTheme() {
     _listeners.forEach(fn => fn(_theme))
   }, [])
 
-  return { theme, toggleTheme }
+  // 直接选定主题（标题栏「白天/夜间」双钮用）；与当前一致时不重复写入
+  const selectTheme = useCallback((next: Theme) => {
+    if (next === _theme) return
+    _theme = next
+    _applyTheme(_theme)
+    _listeners.forEach(fn => fn(_theme))
+  }, [])
+
+  return { theme, toggleTheme, setTheme: selectTheme }
 }

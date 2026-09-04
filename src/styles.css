@@ -1409,9 +1409,12 @@ html[data-theme='dark'] .um-bar { background: #3a413f; }
 html[data-theme='dark'] .usage-bar i { background: #33393b; }
 html[data-theme='dark'] .week-row i { background: #33393b; }
 html[data-theme='dark'] .toast { background: #141817; }
-/* 主题切换按钮 */
-.theme-toggle { width: 34px; height: 26px; display: grid; place-items: center; border-radius: var(--r-sm); background: var(--side-hover); color: var(--side-ink-2); }
-.theme-toggle:hover { background: var(--side-hair); color: var(--side-ink); }
+/* 昼夜切换：白天/夜间双钮分段 */
+.theme-switch { display: flex; height: 26px; border: 1px solid var(--side-hair); border-radius: var(--r-sm); }
+.theme-switch button { display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; background: transparent; color: var(--side-ink-2); font-size: var(--fs-xs); letter-spacing: .05em; }
+.theme-switch button + button { border-left: 1px solid var(--side-hair); }
+.theme-switch button:hover { background: var(--side-hover); color: var(--side-ink); }
+.theme-switch button.on { background: var(--accent-soft); color: var(--accent); }
 
 /* ===================== 续写方向栏（写作面板底部 · 朱批语言） ===================== */
 .direction-bar {

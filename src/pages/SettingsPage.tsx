@@ -766,7 +766,7 @@ function PathForm({ defaultPath, hasNativePicker, onClose, onApply, busy }: { de
 function AboutSection() {
   return <Scroll>
     <div style={{ maxWidth: 'min(720px, 100%)', margin: '0 auto' }}>
-      <PageHeader eyebrow="关于" title="墨境 Mojing" desc="本地优先的 AI 小说创作工作台。" />
+      <PageHeader eyebrow="关于" title="墨境 Mojing" desc="AI 小说创作工作台。" />
       <div className="pref-list">
         <PrefCard title="版本信息" desc="墨境 0.3.0 · Electron + FastAPI + React · SQLite 本地存储。">
           <PrefRow label="核心功能" hint="多作品管理 · 章节版本 · 角色 / 地点 / 世界观 / 伏笔 · 时间线 · 地图涂鸦" />

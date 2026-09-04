@@ -1,6 +1,6 @@
 # 墨境（Mojing）
 
-本地优先的 AI 小说创作工作台。Electron + React + FastAPI + SQLite，所有数据存在本地，无需联网。
+AI 小说创作工作台。Electron + React + FastAPI + SQLite，所有数据存在本地，无需联网。
 
 ## 开发
 

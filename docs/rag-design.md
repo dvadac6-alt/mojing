@@ -6,7 +6,7 @@
 > - **只做 API 调用**的 embedding（复用 OpenAI 兼容 `/v1/embeddings` 端点）；本地 ONNX、rerank、向量库等**本期不做**，仅在架构上留位。
 > - 三个场景全做：① 自身作品跨章检索 ② 资料库检索 ③ 语义搜索替代 LIKE。
 >
-> 设计原则：**本地优先不动摇**——正文与索引全部存本地 SQLite；只有 embedding 计算走 API（设置页明示）。无 embedding 配置时全部功能优雅降级（检索跳过、搜索回退 LIKE）。
+> 设计原则：正文与索引全部存本地 SQLite；只有 embedding 计算走 API（设置页明示）。无 embedding 配置时全部功能优雅降级（检索跳过、搜索回退 LIKE）。
 
 ---
 

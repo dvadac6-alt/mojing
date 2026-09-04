@@ -73,26 +73,55 @@ function probeBackend(port) {
   })
 }
 
-async function isOurBackendReady(port) {
+// A service answering /api/health with app='mojing' isn't necessarily OUR
+// backend: a leftover dev instance serves the same health shape but a different
+// storage.json lineage — different token and, critically, a different data
+// dir, so adopting it shows the wrong (or an empty) library. Confirm lineage
+// with one token-authenticated call: only a backend sharing our storage.json
+// (hence our data dir) accepts it.
+function probeAuthed(port, token) {
+  return new Promise(resolve => {
+    // The Origin header matters: dev-mode backends waive the token for
+    // Origin-less loopback requests (plain browser tabs), so a tokenless probe
+    // would pass against ANY dev instance. An untrusted origin forces the
+    // token comparison, which is the lineage check we actually want.
+    const req = http.get(`http://127.0.0.1:${port}/api/storage`, { headers: { Authorization: `Bearer ${token}`, Origin: 'app://mojing-probe' } }, response => {
+      response.resume()
+      resolve(response.statusCode === 200)
+    })
+    req.on('error', () => resolve(false))
+    req.setTimeout(1200, () => { req.destroy(); resolve(false) })
+  })
+}
+
+async function ownsPortService(port) {
   const info = await probeBackend(port)
   if (!info) return false
-  backendToken = await readStoredToken()
+  let token
+  try {
+    token = await readStoredToken(0)
+  } catch {
+    return false
+  }
+  if (!(await probeAuthed(port, token))) {
+    console.warn(`[Mojing API] port ${port} answers as mojing but rejects our token; not reusing it`)
+    return false
+  }
+  backendToken = token
   return true
+}
+
+async function isOurBackendReady(port) {
+  return ownsPortService(port)
 }
 
 function waitForBackend(port, retries = 40) {
   return new Promise((resolve, reject) => {
     const check = () => {
-      probeBackend(port).then(async info => {
-        if (info) {
-          try {
-            backendToken = await readStoredToken()
-            resolve()
-          } catch (error) { reject(error) }
-        } else {
-          retry()
-        }
-      })
+      // Lineage-checked as well: when a foreign service holds this port our
+      // child never binds, the probe keeps rejecting our token, and we retry
+      // (then give up and move to the next port) instead of locking onto it.
+      ownsPortService(port).then(ok => (ok ? resolve() : retry()))
     }
     const retry = () => {
       if (retries-- <= 0) reject(new Error('Local backend failed to start'))

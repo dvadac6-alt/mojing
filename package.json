@@ -23,6 +23,8 @@
     "gen:types": "openapi-typescript http://127.0.0.1:8765/openapi.json -o src/api-types.ts"
   },
   "dependencies": {
+    "@types/diff-match-patch": "^1.0.36",
+    "diff-match-patch": "^1.0.5",
     "electron-updater": "^6.8.9",
     "electron-window-state": "^5.0.3",
     "lucide-react": "^0.468.0",

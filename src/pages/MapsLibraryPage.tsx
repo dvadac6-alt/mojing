@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import type { Doodle, LibraryDoc, Location, StoryMap, Terrain, Workspace } from '../workspaceApi'
 import { workspaceApi } from '../workspaceApi'
-import { areaCls, inputCls, selectCls } from '../lib/constants'
+import { areaCls, inputCls, selectCls, readLastMapId, writeLastMapId } from '../lib/constants'
 import { Button, Field, FormFooter, Modal, PageHeader } from '../components/ui'
 import { confirmDialog } from '../components/Confirm'
 import { toast } from '../components/Toast'
@@ -146,16 +146,26 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
     [baseMarkers, overrides],
   )
 
-  // Load the map list once per novel.
+  // Load the map list once per novel. 恢复顺序：本次会话已选的 > 上次打开的
+  // （localStorage 按作品记忆，需仍存在）> 第一张。
   useEffect(() => {
     let alive = true
     workspaceApi.listMaps(novelId).then(list => {
       if (!alive) return
       setMaps(list)
-      setCurrentMapId(prev => (list.some(m => m.id === prev) ? prev : (list[0]?.id ?? null)))
+      setCurrentMapId(prev => {
+        if (prev && list.some(m => m.id === prev)) return prev
+        const saved = readLastMapId(novelId)
+        return saved && list.some(m => m.id === saved) ? saved : (list[0]?.id ?? null)
+      })
     }).catch(() => {})
     return () => { alive = false }
   }, [novelId])
+
+  // 选中即记忆：下次进入本作品的地图页直接恢复这张。
+  useEffect(() => {
+    if (currentMapId) writeLastMapId(novelId, currentMapId)
+  }, [currentMapId, novelId])
 
   // Switching map → load its strokes + terrains (strokes live in their own
   // table now, one row per pen-up, so loading is independent of the map blob).

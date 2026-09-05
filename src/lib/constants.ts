@@ -61,6 +61,14 @@ export const readAutosaveMs = (): number => {
 export const writeAutosaveMs = (ms: number) =>
   localStorage.setItem('mojing.autosaveMs', String(ms))
 
+// 地图页：按作品记住上次打开的地图（恢复时需校验该地图仍存在）。
+export const readLastMapId = (novelId: string): string | null => {
+  try { return localStorage.getItem(`mojing.lastMap.${novelId}`) } catch { return null }
+}
+export const writeLastMapId = (novelId: string, mapId: string) => {
+  try { localStorage.setItem(`mojing.lastMap.${novelId}`, mapId) } catch { /* 存储被禁用时静默降级 */ }
+}
+
 // F4 专注模式：默认本次字数目标。
 export const FOCUS_GOAL_DEFAULT = 1000
 export const readFocusGoal = (): number => {

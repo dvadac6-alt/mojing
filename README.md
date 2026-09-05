@@ -102,13 +102,5 @@ npm run pack
 electron/   Electron 主进程与开发脚手架
 backend/    FastAPI 后端（SQLite、AI 代理、备份、RAG）
 src/        React 前端（pages / components / hooks / lib）
-designs/    UI 方向探索稿（水墨三稿对比页）
-docs/       设计文档与历史优化记录
+docs/       README 用截图
 ```
-
-## 文档索引
-
-- [RAG 设计](docs/rag-design.md)
-- [UI 设计规范 v1](docs/ui-design-spec-v1.md)
-- [优化建议（最新）](docs/optimization-suggestions-v3.md)
-- [功能扩展规划](docs/feature-expansion-plan-v1.md)

@@ -42,3 +42,7 @@ ui-audit-shots/
 
 # Clean project export for sharing (git archive output) — a full copy of the repo
 mojing/
+# Internal design/plan docs & UI mockups — kept locally, not published
+# (docs/screenshots for the README stay tracked)
+docs/*.md
+designs/

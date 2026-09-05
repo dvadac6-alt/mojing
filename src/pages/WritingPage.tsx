@@ -888,7 +888,7 @@ const PanelConnectLine = memo(function PanelConnectLine() {
 // memo: the editor re-renders on every keystroke / streamed AI token; the
 // panels' own state drives their updates, so skip them unless props change.
 const QuickAI = memo(function QuickAI({ workspace, chapter, direction, onAccept }: { workspace: Workspace; chapter: ChapterSummary; direction: string; onAccept: (text: string) => void }) {
-  const [instruction, setInstruction] = useState('让马车里的人交代城北线索，但不要揭示他的真实身份。气氛保持克制、紧张。')
+  const [instruction, setInstruction] = useState('')
   const [mode, setMode] = useState<'continue' | 'polish' | 'expand'>('continue')
   const [target, setTarget] = useState('800')
   const [modelId, setModelId] = useState<number | null>(null)
@@ -906,6 +906,11 @@ const QuickAI = memo(function QuickAI({ workspace, chapter, direction, onAccept 
   const abortRef = useRef<AbortController | null>(null)
 
   const generate = async () => {
+    // 空要求且未选续写方向时提示而非发空指令（placeholder 只是提示，不参与请求）。
+    if (!instruction.trim() && !direction) {
+      toast.error('请先在「写作要求」里描述你想写的场景或剧情走向')
+      return
+    }
     setOutput(''); setError(''); setPhase('connecting')
     const controller = new AbortController()
     abortRef.current = controller
@@ -980,7 +985,7 @@ const QuickAI = memo(function QuickAI({ workspace, chapter, direction, onAccept 
       <button className="tpl-chip first-chapter" title="用作品简介生成第一章开篇草稿" onClick={applyFirstChapter}><BookOpen size={11} />按简介创作第一章</button>
     </div>
     <label>写作要求</label>
-    <div className="prompt"><textarea value={instruction} maxLength={500} onChange={e => setInstruction(e.target.value)} /><footer><span>{instruction.length} / 500</span></footer></div>
+    <div className="prompt"><textarea value={instruction} maxLength={500} placeholder="描述你想写的场景或者剧情走向，如：让马车里的人交代城北线索，但不要揭示他的真实身份。气氛保持克制、紧张。" onChange={e => setInstruction(e.target.value)} /><footer><span>{instruction.length} / 500</span></footer></div>
     <ModelSelect value={modelId} onChange={setModelId} />
     <div className="two-fields">
       <Field label="生成方式"><select className={selectCls} value={mode} onChange={e => setMode(e.target.value as typeof mode)}><option value="continue">续写正文</option><option value="polish">润色正文</option><option value="expand">扩写场景</option></select></Field>
@@ -1004,13 +1009,17 @@ const QuickAI = memo(function QuickAI({ workspace, chapter, direction, onAccept 
 })
 
 const AgentPanel = memo(function AgentPanel({ workspace, onAccept }: { workspace: Workspace; onAccept: (t: string) => void }) {
-  const [goal, setGoal] = useState('完成本章后半段，推进玉佩伏笔，但不要揭晓幕后人物。')
+  const [goal, setGoal] = useState('')
   const [modelId, setModelId] = useState<number | null>(null)
   const [output, setOutput] = useState('')
   const [phase, setPhase] = useState<'idle' | 'connecting' | 'streaming'>('idle')
   const total = useTotalTimer(phase !== 'idle')
   const abortRef = useRef<AbortController | null>(null)
   const run = async () => {
+    if (!goal.trim()) {
+      toast.error('请先描述任务目标，例如：完成本章后半段，推进玉佩伏笔，但不要揭晓幕后人物。')
+      return
+    }
     setOutput(''); setPhase('connecting')
     const controller = new AbortController()
     abortRef.current = controller
@@ -1034,7 +1043,7 @@ const AgentPanel = memo(function AgentPanel({ workspace, onAccept }: { workspace
     <h3>写作 Agent</h3>
     <p>给出目标，Agent 会收集资料、生成草稿并自检。</p>
     <label>任务目标</label>
-    <textarea className="agent-goal" value={goal} onChange={e => setGoal(e.target.value)} />
+    <textarea className="agent-goal" value={goal} placeholder="描述任务目标，如：完成本章后半段，推进玉佩伏笔，但不要揭晓幕后人物。" onChange={e => setGoal(e.target.value)} />
     <ModelSelect value={modelId} onChange={setModelId} />
     <div className="plan-preview">{['收集作品上下文', '生成章节草稿', '目标符合度自检'].map((x, i) => <div key={x}><b>{i + 1}</b><span><strong>{x}</strong><small>{i === 0 ? '近期章节、人物、伏笔' : i === 1 ? '等待作者审阅' : '检查连续性问题'}</small></span></div>)}</div>
     <div className="ai-generate-row">

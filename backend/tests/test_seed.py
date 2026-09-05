@@ -23,7 +23,7 @@ def test_seed_populates_empty_db():
         seed_demo_workspace(db)
         novels = db.query(Novel).all()
         assert len(novels) == 1
-        assert novels[0].title == "雾隐长街"
+        assert novels[0].title == "雾隐长街（测试用例）"
         assert db.query(Chapter).count() == len(novels[0].chapters) > 0
 
 

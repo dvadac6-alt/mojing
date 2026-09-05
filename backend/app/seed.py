@@ -93,7 +93,7 @@ def seed_demo_workspace(database: Session) -> None:
     if database.scalar(select(Novel.id).limit(1)):
         return
     novel = Novel(
-        title="雾隐长街",
+        title="雾隐长街（测试用例）",
         description="一场持续三年的雨，和一桩无人敢提起的旧案。",
         author="",
         genre="悬疑",

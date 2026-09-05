@@ -518,6 +518,7 @@ def _dialogue_messages(novel: Novel, characters: list[Character], scene: str) ->
         f"你是专业的小说作家，正在创作《{novel.title}》（{novel.genre or '小说'}）。"
         "根据下面的角色卡写一段多角色对话场景：每个角色的说话方式要符合各自性格，"
         "声口有区分度；可穿插少量动作与神态描写；不要旁白解说，不要推进场景之外的重大情节。"
+        + prompt_builder.PROSE_FORMAT_RULES
     )
     user_parts = ["## 参与角色\n" + "\n".join(cards)]
     if rel_notes:

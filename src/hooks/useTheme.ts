@@ -13,6 +13,10 @@ function readInitialTheme(): Theme {
 // 模块级单例状态 + 订阅：App/标题栏/设置页各挂一个 useTheme() 实例，
 // 任何一处切换，其余实例同步重渲染（此前各持独立 state 会图标错位）。
 let _theme: Theme = readInitialTheme()
+// 初始主题必须落到 <html data-theme>：CSS 靠它取色，缺省渲染浅色。
+// 此前只有点击切换才写，系统偏好为深色的机器首启会出现「界面白天、
+// 设置页却高亮夜间」的状态错位。不写 localStorage，保留「跟随系统」语义。
+document.documentElement.dataset.theme = _theme
 const _listeners = new Set<(t: Theme) => void>()
 
 function _applyTheme(theme: Theme) {

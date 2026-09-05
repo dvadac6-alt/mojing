@@ -1,5 +1,5 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
-const { spawn } = require('node:child_process')
+const { app, BrowserWindow, Menu, Tray, ipcMain, dialog, nativeImage, shell } = require('electron')
+const { spawn, spawnSync } = require('node:child_process')
 const fs = require('node:fs')
 const http = require('node:http')
 const path = require('node:path')
@@ -15,6 +15,42 @@ let mainWindow = null
 let backendProcess = null
 let backendPort = BASE_PORT
 let backendToken = ''
+// ── 托盘后台运行 ──
+// 关闭窗口 = 缩到托盘继续后台运行（写作数据随时可唤回）；从托盘菜单或
+// 退出流程真正关闭时置 isQuitting，放行 close 事件。
+let tray = null
+let isQuitting = false
+let trayHintShown = false
+
+function showMainWindow() {
+  if (!mainWindow) { createWindow(); return }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function maybeTrayHint() {
+  // 首次缩到托盘时气泡告知去向，避免用户以为应用已退出却仍在后台。
+  if (trayHintShown || !tray || process.platform !== 'win32') return
+  trayHintShown = true
+  tray.displayBalloon({
+    iconType: 'info',
+    title: '墨境仍在后台运行',
+    content: '窗口已最小化到系统托盘；右键托盘图标可选择退出。',
+  })
+}
+
+function createTray() {
+  const icon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'tray-icon.png'))
+  tray = new Tray(icon)
+  tray.setToolTip('墨境 · AI 小说创作工作台')
+  tray.on('click', showMainWindow)
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '打开墨境', click: showMainWindow },
+    { type: 'separator' },
+    { label: '退出墨境', click: () => app.quit() },
+  ]))
+}
 
 // ---- health probe ----------------------------------------------------------
 // Reads /api/health to (a) detect a ready backend and (b) confirm it is actually
@@ -132,16 +168,21 @@ function waitForBackend(port, retries = 40) {
 }
 
 // Resolve the python interpreter/executable to spawn. Packaged builds ship a
-// PyInstaller-frozen single-file exe in extraResources; dev uses the system
-// python. (#3)
+// PyInstaller-frozen single-file exe in extraResources; dev prefers the repo
+// venv interpreter — a bare `python` on PATH is usually the system install
+// without the backend's dependencies (#uvicorn import error at boot).
 function backendCommand() {
   if (app.isPackaged) {
     const exeName = process.platform === 'win32' ? 'mojing-backend.exe' : 'mojing-backend'
     const exePath = path.join(process.resourcesPath, 'backend', exeName)
     return { cmd: exePath, args: [], cwd: undefined }
   }
-  const backendDirectory = path.join(__dirname, '..', 'backend')
-  return { cmd: 'python', args: ['main.py'], cwd: backendDirectory }
+  const root = path.join(__dirname, '..')
+  const venvPython = [
+    path.join(root, '.venv', 'Scripts', 'python.exe'),  // Windows venv
+    path.join(root, '.venv', 'bin', 'python'),          // POSIX venv
+  ].find(candidate => fs.existsSync(candidate))
+  return { cmd: venvPython || 'python', args: ['main.py'], cwd: path.join(root, 'backend') }
 }
 
 async function startBackend() {
@@ -193,7 +234,7 @@ async function trySpawn(port) {
       // 重试时旧的孤儿后端会一直堆积，占用端口和内存。
       const child = backendProcess
       if (child && child.exitCode === null) {
-        try { child.kill() } catch { /* already dying */ }
+        killProcessTree(child)
         child.once('exit', () => resolve(false))
         // 兜底：进程拒绝退出时也不能永远卡住本次尝试。
         setTimeout(() => resolve(false), 2000)
@@ -341,39 +382,80 @@ function createWindow() {
   } else {
     mainWindow.once('ready-to-show', () => mainWindow.show())
   }
+  // 关窗不退出：缩到托盘后台运行，托盘菜单/退出流程负责真正的关闭。
+  mainWindow.on('close', event => {
+    if (!isQuitting) {
+      event.preventDefault()
+      mainWindow.hide()
+      maybeTrayHint()
+    }
+  })
   mainWindow.on('closed', () => { mainWindow = null })
 }
 
-app.whenReady().then(async () => {
-  try {
-    await startBackend()
-    createWindow()
-    setupAutoUpdater()  // (#10) only acts in packaged builds
-  } catch (error) {
-    console.error(error)
-    app.quit()
-  }
-})
-
 // 杀掉后端子进程。before-quit 之外再挂 exit/信号兜底：主进程崩溃或被
 // 强杀时，PyInstaller 后端不会变成占用端口、吃 CPU 的孤儿进程。
+// Windows 上 kill() 只终止直接子进程——PyInstaller 单文件是「引导父进程
+// + 服务子进程」两层，只杀父进程会把服务子进程留在后台继续占端口
+// （用户实测残留过 mojing-backend.exe），所以按进程树 taskkill /T 终结。
+function killProcessTree(child) {
+  try {
+    if (process.platform === 'win32' && child.pid) {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 3000 })
+    } else {
+      child.kill()
+    }
+  } catch { /* already exited */ }
+}
 function killBackend() {
   if (backendProcess && !backendProcess.killed) {
-    try { backendProcess.kill() } catch { /* already exited */ }
+    killProcessTree(backendProcess)
     backendProcess = null
   }
 }
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
-})
+// 单实例锁：托盘后台驻留期间再次启动应用，不再重复开窗口/抢后端端口，
+// 而是唤起已有实例的窗口。
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', () => showMainWindow())
 
-app.on('activate', () => {
-  if (!mainWindow) createWindow()
-})
+  app.whenReady().then(async () => {
+    try {
+      await startBackend()
+      createWindow()
+      createTray()
+      setupAutoUpdater()  // (#10) only acts in packaged builds
+    } catch (error) {
+      console.error(error)
+      app.quit()
+    }
+  })
 
-app.on('before-quit', killBackend)
-app.on('quit', killBackend)
+  app.on('window-all-closed', () => {
+    // 常规路径关窗只是隐藏到托盘，不会走到这里；这里的 quit 是窗口
+    // 真被全部关闭（如退出流程收尾）时的兜底。
+    if (process.platform !== 'darwin') app.quit()
+  })
+
+  app.on('activate', () => {
+    if (mainWindow) showMainWindow()
+    else createWindow()
+  })
+
+  app.on('before-quit', () => {
+    isQuitting = true
+    tray?.destroy()
+    tray = null
+    killBackend()
+  })
+  app.on('quit', () => {
+    tray?.destroy()
+    tray = null
+    killBackend()
+  })
+}
 process.on('exit', killBackend)
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, () => { killBackend(); process.exit(0) })

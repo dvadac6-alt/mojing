@@ -7,6 +7,18 @@ from sqlalchemy.orm import Session
 from ...models import Chapter, Character, Location, Novel, PlotThread, ThreadStatus, WorldSetting
 from ...schemas import AIContextOptions
 
+# 输出小说正文时的排版硬约束：模型默认产出 Markdown 风格（# 标题、* 强调、
+# 段间多空行），与纯文本稿件惯例冲突。这里是源头约束；前端 textFormat 的
+# normalizeAiText 负责兜底清洗（模型偶尔仍会违反）。
+PROSE_FORMAT_RULES = (
+    "\n\n输出排版规范：正文必须是纯文本小说稿件，禁止任何 Markdown 标记"
+    "（#、*、-、数字编号、代码块等）；每个自然段以两个全角空格开头；"
+    "对话统一使用直角引号「」，引语内嵌套使用『』；段落之间至多一个空行。"
+)
+
+# 这些模式的输出直接进正文稿面，需要排版约束；结构化输出（世界观条目、摘要等）有自己的严格格式。
+PROSE_MODES = {"continue", "polish", "expand", "dialogue"}
+
 
 def _recent_chapter_summary(database: Session, novel_id: str, count: int) -> str:
     if count <= 0:
@@ -103,6 +115,7 @@ def build_messages(
         f"当前你正在协助创作《{novel.title}》。{novel.description}\n\n"
         + "\n\n".join(sections)
         + (f"\n\n{style_note}" if style_note else "")
+        + (PROSE_FORMAT_RULES if mode in PROSE_MODES else "")
     )
 
     task_map = {

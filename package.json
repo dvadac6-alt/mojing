@@ -2,11 +2,11 @@
   "name": "mojing",
   "description": "墨境 Windows AI 小说创作工具",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
-    "backend": ".venv\\Scripts\\python.exe backend/main.py 8765",
+    "backend": "set PYTHONUTF8=1&& .venv\\Scripts\\python.exe backend/main.py 8765",
     "dev:ui": "vite --host 127.0.0.1",
     "dev": "concurrently -k -n backend,ui \"npm:backend\" \"npm:dev:ui\"",
     "desktop": "node electron/dev.cjs",
@@ -18,8 +18,8 @@
     "test:backend": ".venv\\Scripts\\python.exe -m pytest backend/tests -q",
     "test:ui": "node --test src/lib/*.test.ts",
     "lint": "eslint src",
-    "pack": "npm run build && npm run backend:dist && electron-builder --dir",
-    "dist": "npm run build && npm run backend:dist && electron-builder --win --x64 --publish always",
+    "pack": "npm run build && npm run backend:dist && set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/&& electron-builder --dir",
+    "dist": "npm run build && npm run backend:dist && set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/&& electron-builder --win --x64 --publish always",
     "gen:types": "openapi-typescript http://127.0.0.1:8765/openapi.json -o src/api-types.ts"
   },
   "dependencies": {

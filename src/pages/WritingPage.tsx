@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import {
-  BookOpen, Bot, BrainCircuit, Check, ChevronLeft, ChevronRight, Database, Dices, Feather,
+  AlignLeft, BookOpen, Bot, BrainCircuit, Check, ChevronLeft, ChevronRight, Database, Dices, Feather,
   GripVertical, History, Maximize2, Minimize2, MessagesSquare, PanelRightClose, Plus,
-  Save, ScrollText, ShieldCheck, Sparkles, Square, Trash2, WandSparkles, X,
+  Redo2, Save, ScrollText, ShieldCheck, Sparkles, Square, Trash2, Undo2, WandSparkles, X,
 } from 'lucide-react'
 import {
   runAIStream, workspaceApi,
@@ -15,7 +15,8 @@ import {
 } from '../lib/constants'
 import { confirmDialog } from '../components/Confirm'
 import { toast } from '../components/Toast'
-import { indentParagraphs } from '../lib/textFormat'
+import { formatForManuscript } from '../lib/textFormat'
+import { EditorHistory, type Snapshot } from '../lib/editorHistory'
 import { buildReviewDiff } from '../lib/diff'
 import { Button, EmptyState, Field, Modal, SearchBox } from '../components/ui'
 import { ModelSelect } from '../components/ModelSelect'
@@ -206,26 +207,78 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
   const [review, setReview] = useState<ReviewState | null>(null)
   const reviewRef = useRef<ReviewState | null>(null)
   const setReviewBoth = useCallback((r: ReviewState | null) => { reviewRef.current = r; setReview(r) }, [])
-  const acceptReview = useCallback(() => {
-    const r = reviewRef.current
-    if (!r) return
-    setDraft(d => d.slice(0, r.start) + r.finalText + d.slice(r.end))
-    setHighlights([])
-    setReviewBoth(null)
-  }, [setReviewBoth])
-  const cancelReview = useCallback(() => {
-    const r = reviewRef.current
-    if (!r) return
-    setDraft(d => d.slice(0, r.start) + r.orig + d.slice(r.end))
-    setHighlights([])
-    setReviewBoth(null)
-  }, [setReviewBoth])
   const [aiPhase, setAiPhase] = useState<'idle' | 'connecting' | 'streaming'>('idle')
   const [aiError, setAiError] = useState('')
   const aiAbort = useRef<AbortController | null>(null)
   // InlineAIStatus 的 memo props：稳定引用，500ms 计时只重渲染状态条本身。
   const stopInlineAI = useCallback(() => aiAbort.current?.abort(), [])
   const dismissAiError = useCallback(() => setAiError(''), [])
+
+  // 切页/关窗兜底用的状态镜像（提前声明：撤销历史栈也读它拿「此刻」正文，
+  // 避免闭包里捕获过期的 draft）。
+  const pendingStateRef = useRef({ id: '', title: '', content: '' })
+  pendingStateRef.current = { id: activeId, title: draftTitle, content: draft }
+
+  // ── 撤销/重做（Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y）──
+  // textarea 原生撤销只能覆盖手动输入，AI 流式插入、整理排版、审阅落定这类
+  // 程序化 setDraft 会打断原生栈——自建整章快照历史：打字 700ms 去抖合并成
+  // 一笔，程序化修改前显式提交一笔，快照附带全局光标位用于恢复插入点。
+  const history = useRef(new EditorHistory())
+  const histTimer = useRef<number | null>(null)
+  const caretRef = useRef(0)
+  const [histFlags, setHistFlags] = useState({ undo: false, redo: false })
+  const [caretJump, setCaretJump] = useState<number | null>(null)
+  const syncHistFlags = useCallback(() => {
+    setHistFlags({ undo: history.current.canUndo, redo: history.current.canRedo })
+  }, [])
+  const commitHistory = useCallback(() => {
+    if (histTimer.current != null) { window.clearTimeout(histTimer.current); histTimer.current = null }
+    history.current.push(pendingStateRef.current.content, caretRef.current)
+    syncHistFlags()
+  }, [syncHistFlags])
+  const scheduleHistPush = useCallback(() => {
+    if (histTimer.current != null) window.clearTimeout(histTimer.current)
+    histTimer.current = window.setTimeout(() => { histTimer.current = null; commitHistory() }, 700)
+  }, [commitHistory])
+  const resetHistory = useCallback((content: string) => {
+    if (histTimer.current != null) { window.clearTimeout(histTimer.current); histTimer.current = null }
+    history.current.reset(content)
+    syncHistFlags()
+  }, [syncHistFlags])
+  const applySnapshot = useCallback((snap: Snapshot | null) => {
+    if (!snap) return
+    if (histTimer.current != null) { window.clearTimeout(histTimer.current); histTimer.current = null }
+    setDraft(snap.content)
+    setHighlights([]) // AI 绿标区间随内容回退失效，先清掉避免悬挂
+    caretRef.current = snap.caret
+    setCaretJump(snap.caret)
+    syncHistFlags()
+  }, [syncHistFlags])
+  const doUndo = useCallback(() => {
+    if (aiPhase !== 'idle' || reviewRef.current) return // 流式写入/审阅态下偏移量在流动，禁止回退
+    applySnapshot(history.current.undo())
+  }, [aiPhase, applySnapshot])
+  const doRedo = useCallback(() => {
+    if (aiPhase !== 'idle' || reviewRef.current) return
+    applySnapshot(history.current.redo())
+  }, [aiPhase, applySnapshot])
+  // 审阅裁决（放在历史栈之后声明：依赖数组要引用 commitHistory）。
+  const acceptReview = useCallback(() => {
+    const r = reviewRef.current
+    if (!r) return
+    commitHistory()
+    setDraft(d => d.slice(0, r.start) + r.finalText + d.slice(r.end))
+    setHighlights([])
+    setReviewBoth(null)
+  }, [setReviewBoth, commitHistory])
+  const cancelReview = useCallback(() => {
+    const r = reviewRef.current
+    if (!r) return
+    commitHistory()
+    setDraft(d => d.slice(0, r.start) + r.orig + d.slice(r.end))
+    setHighlights([])
+    setReviewBoth(null)
+  }, [setReviewBoth, commitHistory])
 
   const onContextMenu = (e: React.MouseEvent<HTMLTextAreaElement>) => {
     e.preventDefault()
@@ -237,6 +290,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
 
   const startInlineGenerate = async (insertPos: number, selStart: number, selEnd: number) => {
     setCtxMenu(null)
+    commitHistory() // AI 改写会先删选区原文，撤销要能回到生成前
     const hasSelection = selEnd > selStart
     // 取光标前最多 600 字（或选中文字本身）作为续写上下文。
     const contextBefore = hasSelection ? draft.slice(selStart, selEnd) : draft.slice(Math.max(0, insertPos - 600), insertPos)
@@ -261,10 +315,24 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
     let aiEnd = writeStart
     // 改写场景单独累积 AI 输出全文：流结束后与原文做 diff，进入审阅态。
     let aiText = ''
+    // 流式期间逐 chunk 裸插（清洗会和打字机动画打架）；流结束后对刚写入的
+    // AI 区间整体做一次排版归一（清 Markdown 残留 + 补段首缩进）。
+    const settleInline = () => {
+      if (!aiText) return
+      const cleaned = formatForManuscript(aiText)
+      setDraft(d => {
+        // 流式期间用户若手动改过这段，区间校验失败则原样保留，避免错位覆盖。
+        if (d.slice(writeStart, writeStart + aiText.length) !== aiText) return d
+        return d.slice(0, writeStart) + cleaned + d.slice(writeStart + aiText.length)
+      })
+      setHighlights([{ start: writeStart, end: writeStart + cleaned.length, type: 'add' }])
+    }
     // 把（可能是部分的）AI 改写转成代码审查式审阅：绿=新增 / 红=删除（原位保留）。
+    // 改写稿先进排版归一再 diff——审阅里看到的就是采纳后的最终格式，
+    // 也让缩进与原文对齐，避免每行都多出一段缩进差异。
     const enterReview = () => {
       if (!aiText) { restoreOriginal(); return }
-      const { merged, marks, clean } = buildReviewDiff(contextBefore, aiText)
+      const { merged, marks, clean } = buildReviewDiff(contextBefore, formatForManuscript(aiText))
       setDraft(d => d.slice(0, writeStart) + merged + d.slice(writeStart + aiText.length))
       setHighlights(marks.map(m => ({ start: writeStart + m.start, end: writeStart + m.end, type: m.type })))
       setReviewBoth({ start: writeStart, end: writeStart + merged.length, orig: contextBefore, finalText: clean })
@@ -292,8 +360,9 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
         },
       })
       setAiPhase('idle')
-      // 改写完成（正常结束）：全文 diff 进入审阅态。
+      // 改写完成（正常结束）：全文 diff 进入审阅态；纯续写则整体归一排版。
       if (hasSelection) enterReview()
+      else settleInline()
     } catch (e) {
       const aborted = (e as Error).name === 'AbortError'
       if (!aborted) {
@@ -302,10 +371,12 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
         setAiError((e as Error).message || 'AI 生成失败')
       }
       // 改写被手动停止：已生成的部分照样进入审阅（半截改写也可能有用）；
-      // 失败则还原原文。纯续写（无选区）维持旧行为——已有内容保持绿标。
+      // 失败则还原原文。纯续写（无选区）：手动停止的半截也归一排版——已有内容保持绿标。
       if (hasSelection) {
         if (aborted && aiText) enterReview()
         else restoreOriginal()
+      } else if (aborted && aiText) {
+        settleInline()
       } else if (!aborted) {
         setHighlights([])
       }
@@ -351,25 +422,42 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
       setDraftTitle(full.title)
       savedSignature.current = { title: full.title, content: full.content }
       setSaveState('saved')
+      resetHistory(full.content) // 换章后历史栈不跨章
     } catch {
       if (reqId !== contentReqId.current) return
       setDraft('')
       savedSignature.current = { title: fallbackTitle, content: '' }
       setSaveState('error')
+      resetHistory('')
     } finally {
       if (reqId === contentReqId.current) setLoadingContent(false)
     }
-  }, [])
+  }, [resetHistory])
 
   const activeChapter = workspace.chapters.find(c => c.id === activeId)
   // Stable accept handler for the memoized AI panels — the inline arrow it
   // replaced re-created on every keystroke/stream chunk and defeated their memo,
   // re-rendering the whole assistant sidebar on each token.
-  // 采纳即排版：AI 输出的段落是顶格的，插入时统一补上两个全角空格的段首缩进。
+  // 采纳即排版：AI 输出是 Markdown 风格的顶格文本，formatForManuscript
+  // 先清洗标记残留、统一引号与空行，再补两个全角空格的段首缩进。
   const acceptText = useCallback(
-    (text: string) => setDraft(d => d.replace(/\s*$/, '') + '\n\n' + indentParagraphs(text)),
-    [],
+    (text: string) => {
+      commitHistory() // 采纳 AI 文本属于程序化插入，显式入栈才能撤销
+      setDraft(d => d.replace(/\s*$/, '') + '\n\n' + formatForManuscript(text))
+    },
+    [commitHistory],
   )
+  // 一键整理当前章节稿面：与 AI 采纳同一套规则（清 Markdown 残留、统一引号/
+  // 空行/段首缩进），用于修历史遗留的怪排版。整理前请确认已保存——版本
+  // 历史里有整理前的快照，误点可回退。
+  const tidyFormatting = () => {
+    if (!draft.trim() || reviewRef.current || aiPhase !== 'idle') return
+    const tidied = formatForManuscript(draft)
+    if (tidied === draft) { toast.info('排版已是规范格式，无需整理'); return }
+    commitHistory()
+    setDraft(tidied)
+    toast.success('已整理排版（Ctrl+Z 可撤销，版本历史可回退）')
+  }
   // 脏检查：两个 ===（长度短路）替代旧的整章全文签名拼接。
   const dirty = draftTitle !== savedSignature.current.title || draft !== savedSignature.current.content
   const pages = pagination.content === draft
@@ -392,6 +480,24 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
     ta.focus({ preventScroll: true })
     ta.setSelectionRange(Math.min(lintJump.start, ta.value.length), Math.min(lintJump.end, ta.value.length))
   }, [lintJump, currentPageIndex, loadingContent])
+
+  // 撤销/重做后的光标恢复：分页对旧内容有 300ms 去抖，等 pagination.content
+  // 跟上新 draft 后，再把全局光标映射回页内并选中。
+  useEffect(() => {
+    if (caretJump == null || loadingContent) return
+    if (pagination.content !== draft) return
+    const page = pagination.pages.find(p => caretJump >= p.start && caretJump < p.end)
+      ?? pagination.pages[pagination.pages.length - 1]
+    setPageIndex(Math.max(0, pagination.pages.indexOf(page)))
+    setCaretJump(null)
+    const local = Math.min(Math.max(0, caretJump - page.start), page.text.length)
+    requestAnimationFrame(() => {
+      const ta = manuscriptRef.current
+      if (!ta) return
+      ta.focus({ preventScroll: true })
+      ta.setSelectionRange(local, local)
+    })
+  }, [caretJump, pagination, draft, loadingContent])
 
   // Debounced pagination: re-measure 300ms after draft stops changing, so rapid
   // typing / streaming AI output doesn't trigger the height-binary-search on
@@ -446,6 +552,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
     const r = reviewRef.current
     if (r) {
       const resolved = content.slice(0, r.start) + r.finalText + content.slice(r.end)
+      commitHistory() // 自动落定同样入栈：用户 Ctrl+Z 可回到落定前
       setReviewBoth(null)
       setHighlights([])
       setDraft(resolved)
@@ -510,9 +617,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
 
   // 切页/关窗兜底：自动保存是 1s 防抖，卸载（切页）或窗口关闭前若有未落盘
   // 的改动立即补一次保存——否则最后一次输入会丢，对写作软件不可接受。
-  // 值镜像进 ref，因为兜底回调执行时组件已在卸载过程中。
-  const pendingStateRef = useRef({ id: '', title: '', content: '' })
-  pendingStateRef.current = { id: activeId, title: draftTitle, content: draft }
+  // （状态镜像见上方 pendingStateRef，卸载回调执行时组件已在卸载过程中。）
   const flushPendingSave = useCallback((keepalive: boolean) => {
     const { id, title } = pendingStateRef.current
     let content = pendingStateRef.current.content
@@ -555,12 +660,49 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
       patchWorkspace(c => c ? { ...c, novel: { ...c.novel, chapter_count: c.novel.chapter_count + 1 }, chapters: [...c.chapters, created] } : c)
       setActiveId(created.id); setDraftTitle(created.title); setDraft(created.content); setPageIndex(0)
       savedSignature.current = { title: created.title, content: created.content }
+      resetHistory(created.content)
       setSaveState('saved')
     } catch (e) {
       setSaveState('error')
       toast.error(e instanceof Error ? e.message : '新建章节失败')
     }
   }
+
+  // Ctrl+PageUp/PageDown 相邻章切换。
+  const switchChapter = (dir: 1 | -1) => {
+    const i = workspace.chapters.findIndex(c => c.id === activeId)
+    const next = workspace.chapters[i + dir]
+    if (next) void selectChapter(next)
+  }
+
+  // ── 基础键位（Ctrl/Cmd 系）──
+  // 撤销/重做必须 preventDefault 接管：textarea 原生撤销会被程序化修改打断，
+  // 与快照历史两套并存必然错乱。AI 面板/标题等其他输入控件聚焦时不抢键。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return
+      const el = e.target as HTMLElement | null
+      const inManuscript = el === manuscriptRef.current
+      const inOtherField = !!el && !inManuscript
+        && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
+      const key = e.key.toLowerCase()
+      if (!inOtherField && aiPhase === 'idle' && !reviewRef.current) {
+        if (!e.shiftKey && key === 'z') { e.preventDefault(); doUndo(); return }
+        if ((e.shiftKey && key === 'z') || key === 'y') { e.preventDefault(); doRedo(); return }
+      }
+      if (inOtherField) return
+      if (!e.shiftKey && key === 'n') { e.preventDefault(); void createChapter(); return }
+      if (e.key === 'PageDown') { e.preventDefault(); switchChapter(1); return }
+      if (e.key === 'PageUp') { e.preventDefault(); switchChapter(-1); return }
+      if (e.shiftKey && key === 'f') {
+        e.preventDefault()
+        if (focusOpen) exitFocus()
+        else enterFocus()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [aiPhase, focusOpen, doUndo, doRedo, createChapter, switchChapter, enterFocus, exitFocus])
   const deleteChapter = async () => {
     if (!activeChapter) return
     const ok = await confirmDialog({ title: '删除章节', message: `删除「${activeChapter.title}」后无法恢复（历史版本会一并删除）。`, danger: true, confirmLabel: '删除章节' })
@@ -630,7 +772,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
         <button onClick={exitFocus}><Minimize2 size={14} />退出专注<kbd>Esc</kbd></button>
       </div>}
       <div className="editor-toolbar">
-      <button onClick={deleteChapter} title="删除当前章节" aria-label="删除当前章节"><Trash2 size={15} /></button><button onClick={() => setVersionsOpen(true)} title="版本历史" aria-label="版本历史"><History size={15} /></button><button onClick={() => setSummaryOpen(true)} title="章节摘要" aria-label="章节摘要"><ScrollText size={15} /></button><button onClick={() => setLintOpen(true)} title="发布自检" aria-label="发布自检"><ShieldCheck size={15} /></button><i />
+      <button onClick={deleteChapter} title="删除当前章节" aria-label="删除当前章节"><Trash2 size={15} /></button><button onClick={() => setVersionsOpen(true)} title="版本历史" aria-label="版本历史"><History size={15} /></button><button onClick={() => setSummaryOpen(true)} title="章节摘要" aria-label="章节摘要"><ScrollText size={15} /></button><button onClick={() => setLintOpen(true)} title="发布自检" aria-label="发布自检"><ShieldCheck size={15} /></button><button onClick={tidyFormatting} title="整理排版（清除 Markdown 残留，统一缩进、引号与空行）" aria-label="整理排版"><AlignLeft size={15} /></button><i />
       <span>第 {String(activeChapter.order).padStart(2, '0')} 章 <ChevronRight size={12} /> <strong>{draftTitle || '未命名章节'}</strong></span><b />
       <div className="font-steps" role="group" aria-label="正文字号">
         {EDITOR_FONT_STEPS.map(size => (
@@ -638,6 +780,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
             title={`正文字号 ${size}px`}>{size === 14 ? 'A⁻' : size === 15 ? 'A' : 'A⁺'}</button>
         ))}
       </div>
+      <button onClick={doUndo} disabled={!histFlags.undo} title="撤销（Ctrl+Z）" aria-label="撤销"><Undo2 size={14} /></button><button onClick={doRedo} disabled={!histFlags.redo} title="重做（Ctrl+Y / Ctrl+Shift+Z）" aria-label="重做"><Redo2 size={14} /></button>
       <em className={saveState}><Check size={12} />{loadingContent ? '正在加载…' : saveState === 'saving' ? '正在保存…' : saveState === 'error' ? '保存失败' : `已保存 ${savedAt}`}</em>
       <button onClick={() => void persistChapter()}><Save size={14} />保存<kbd>⌘S</kbd></button>
       <button onClick={() => onGoto('threads')} title="伏笔看板" aria-label="伏笔看板"><BrainCircuit size={14} /></button>
@@ -650,7 +793,7 @@ export function WritingPage({ workspace, patchWorkspace, reload, assistant, onAs
          <div className="manuscript-stage">
            {/* 背景着色层：与 textarea 同步，渲染 AI 新增（绿）/删除（红）标记 */}
            <div className="manuscript-backdrop" aria-hidden="true">{renderBackdrop()}</div>
-           <textarea ref={manuscriptRef} className="manuscript-textarea" value={currentPage.text} readOnly={!!review} onChange={e => { setHighlights([]); setDraft(current => current.slice(0, currentPage.start) + e.target.value + current.slice(currentPage.end)) }} onContextMenu={onContextMenu} aria-label={`章节正文第 ${currentPageIndex + 1} 页`} placeholder={loadingContent ? '正在读取本章内容…' : '从这里开始写作……（右键空白处可 AI 补写）'} spellCheck={false} disabled={loadingContent} />
+           <textarea ref={manuscriptRef} className="manuscript-textarea" value={currentPage.text} readOnly={!!review} onChange={e => { setHighlights([]); caretRef.current = currentPage.start + e.target.selectionStart; setDraft(current => current.slice(0, currentPage.start) + e.target.value + current.slice(currentPage.end)); scheduleHistPush() }} onContextMenu={onContextMenu} aria-label={`章节正文第 ${currentPageIndex + 1} 页`} placeholder={loadingContent ? '正在读取本章内容…' : '从这里开始写作……（右键空白处可 AI 补写）'} spellCheck={false} disabled={loadingContent} />
          </div>
          <div ref={headingMeasureRef} className="page-heading page-heading-measure" aria-hidden="true"><label>第 {toCnNum(activeChapter.order)} 章</label><input className="chapter-title-input" value={draftTitle} readOnly tabIndex={-1} /><div className="ornament"><i /><Feather size={14} /><i /></div></div>
        </article></div>

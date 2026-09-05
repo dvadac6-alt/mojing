@@ -264,6 +264,16 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
     return () => window.removeEventListener('resize', redrawAll)
   }, [redrawAll, currentMapId, doodles])
 
+  // 涂画类操作必须挂在一张地图上（笔画保存在地图名下）。无地图时引导新建，
+  // 而不是静默丢弃涂鸦——那是这套画板最反直觉的历史行为：画完一笔、松手即消失。
+  const needMap = () => {
+    if (currentMapId) return false
+    toast.error('请先新建一张地图：涂鸦与地形命名都保存在地图上')
+    setNewMapOpen(true)
+    setNewMapName('')
+    return true
+  }
+
   // --- doodle interaction (brush / eraser / grid-fill) ---
   // Grid-fill: snap the cursor to a CELL-sized grid and push a [x1,y1,x2,y2]
   // rect per cell the drag touches (de-duped). A 2×2 brush paints 4%×4% tiles.
@@ -279,7 +289,7 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
   }, [gridW, gridH])
 
   const onCanvasMouseDown = useCallback((e: React.MouseEvent) => {
-    if (tool === 'select' || !baseCanvasRef.current || !mapRef.current) return
+    if (tool === 'select' || !currentMapId || !baseCanvasRef.current || !mapRef.current) return
     e.preventDefault()
     e.stopPropagation()
     const rect = baseCanvasRef.current.getBoundingClientRect()
@@ -298,7 +308,7 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
         points: [[x, y]],
       }
     }
-  }, [tool, brushColor, brushWidth, fillCell, redrawLive])
+  }, [tool, currentMapId, brushColor, brushWidth, fillCell, redrawLive])
 
   useEffect(() => {
     const move = (e: MouseEvent) => {
@@ -391,13 +401,14 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
 
   // --- doodle actions (incremental: each op hits a dedicated endpoint) ---
   const undo = () => {
-    if (!currentMapId) return
+    if (!currentMapId) { needMap(); return }
+    if (!doodles.length) return
     setDoodles(prev => (prev.length ? prev.slice(0, -1) : prev))
     workspaceApi.undoLastStroke(currentMapId).catch(() => {})
   }
 
   const clearDoodles = () => {
-    if (!currentMapId) return
+    if (!currentMapId) { needMap(); return }
     setDoodles([])
     workspaceApi.clearStrokes(currentMapId).catch(() => {})
     setConfirmClear(false)
@@ -508,11 +519,11 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
             <button className={editMode ? 'active' : ''}
               onClick={() => { setEditMode(true); setTool('select') }}><Move size={14} />编辑拖拽</button>
             <button className={tool === 'brush' ? 'active' : ''}
-              onClick={() => { setEditMode(false); setTool('brush') }}><Brush size={14} />画笔</button>
+              onClick={() => { if (needMap()) return; setEditMode(false); setTool('brush') }}><Brush size={14} />画笔</button>
             <button className={tool === 'grid' ? 'active' : ''}
-              onClick={() => { setEditMode(false); setTool('grid') }}><Grid3x3 size={14} />方格</button>
+              onClick={() => { if (needMap()) return; setEditMode(false); setTool('grid') }}><Grid3x3 size={14} />方格</button>
             <button className={tool === 'eraser' ? 'active' : ''}
-              onClick={() => { setEditMode(false); setTool('eraser') }}><Eraser size={14} />橡皮</button>
+              onClick={() => { if (needMap()) return; setEditMode(false); setTool('eraser') }}><Eraser size={14} />橡皮</button>
             <i />
             {/* 自定义颜色：画笔/方格时直接调色，不必先命名地形 */}
             {(tool === 'brush' || tool === 'grid') && (
@@ -608,7 +619,15 @@ export function MapsPage({ workspace }: { workspace: Workspace }) {
                 <strong>{m.name}</strong>
               </span>
             ))}
-            {!currentMap && <div className="map-empty"><MapIcon size={32} /><p>先在左侧新建一张地图</p></div>}
+            {!currentMap && markers.length === 0 && <div className="map-empty"><MapIcon size={32} /><p>先在左侧新建一张地图</p></div>}
+            {/* 有地点但还没建图：地点按层级临时布局展示，用底部横幅引导建图，
+                不再用居中大字盖在标记上。 */}
+            {!currentMap && markers.length > 0 && (
+              <div className="map-banner">
+                <span>地点已按层级临时布局；新建地图后可涂画地形、命名图例并保存涂鸦</span>
+                <button onClick={() => { setNewMapOpen(true); setNewMapName('') }}><Plus size={12} />新建地图</button>
+              </div>
+            )}
             {currentMap && markers.length === 0 && !toolIsPaint && <div className="map-empty"><MapIcon size={32} /><p>暂无地点标记，可以先用画笔涂地形</p></div>}
           </div>
         </div>

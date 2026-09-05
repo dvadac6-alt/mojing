@@ -9,6 +9,7 @@ from .models import (
     Novel,
     NovelStatus,
     PlotThread,
+    StoryMap,
     ThreadPriority,
     ThreadStatus,
     WorldSetting,
@@ -141,6 +142,12 @@ def seed_demo_workspace(database: Session) -> None:
             database.add(location)
             database.flush()
             created[data["name"]] = location
+
+    # ---- story map (idempotent) ----
+    # 演示作品自带一张地图：地图页的涂鸦/地形命名都挂在地图名下，没有地图时
+    # 这些功能全部不可用（首启直接踩坑）。
+    if not database.scalar(select(StoryMap.id).where(StoryMap.novel_id == novel.id).limit(1)):
+        database.add(StoryMap(novel_id=novel.id, name="长街全景"))
 
     # ---- world settings (idempotent) ----
     if not database.scalar(select(WorldSetting.id).where(WorldSetting.novel_id == novel.id).limit(1)):
